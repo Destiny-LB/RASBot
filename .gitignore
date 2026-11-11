@@ -1,0 +1,59 @@
+# Local runtime: databases, tasks, prompts, sessions, credentials, reports
+.rasbot/
+.local/
+# Personal environment and engine configuration
+.env
+.env.*
+!.env.example
+.opencode/
+opencode.json
+opencode.jsonc
+*.local.json
+*.local.toml
+# Python and editor build/cache files
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+.vscode/
+.idea/
+# Local logs and database files
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+# Private key material and local credentials
+*.key
+*.pem
+*.p12
+*.pfx
+credentials.json
+auth.json
+.npmrc
+# Local experiment/export directories (keep fixtures inside tests/)
+/.runs/
+/.atk_queue/
+/reports/
+/output/
+/_shots/
+# Additional development caches
+.ruff_cache/
+.mypy_cache/
+node_modules/
+.DS_Store
+Thumbs.db

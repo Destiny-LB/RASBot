@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rasbot"
+version = "0.1.0"
+description = "Evidence-driven AI reliability agent platform"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+
+[project.scripts]
+rasbot = "rasbot.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["rasbot*"]
+
+[tool.setuptools.package-data]
+rasbot = ["web.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
