@@ -115,7 +115,8 @@ class EvolutionTests(unittest.TestCase):
         r = self.evo.create([self.task], ['sample', 'holdout'], self.model, round_minutes=60)
         self.assertEqual(r['policy']['round_seconds'], 3600)
         self.assertEqual(r['policy']['proposal_seconds'], 300)
-        self.assertEqual(r['policy']['trial_seconds'], 735)
+        self.assertEqual(r['policy']['trial_seconds'], 367)
+        self.assertEqual(r['policy']['max_trials'], 8)
         self.assertEqual(json.loads((Path(r['root']) / 'evaluator-snapshot/policy.json').read_text()), r['policy'])
 
     def test_round_timeout_prevents_new_work_and_collects_evidence(self):

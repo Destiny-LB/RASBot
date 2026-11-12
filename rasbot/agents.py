@@ -16,7 +16,7 @@ class PrecisionAgent:
     task_label = '算子任务'
     description = '生成精度测试用例并离线校验；硬件执行尚未接入。'
     harness_id = 'precision-generation'
-    evaluator_id = 'generation-gate-v1'
+    evaluator_id = 'generation-gate-efficiency-v2'
     evolution_goal = '提高正式用例生成合规性'
     def __init__(self, repo): self.repo = repo
     def catalog(self):
@@ -40,11 +40,17 @@ class PrecisionAgent:
                 if file.is_file() and '__pycache__' not in file.parts: yield file
         yield Path(__file__).with_name('agent_runtime.py')
     def evaluate(self, task):
-        return {'passed': task['state'] == 'generated' and task['result'].get('validation', {}).get('passed') is True,
-                'comparable': task['state'] in ('generated', 'validation_failed')}
+        from .evidence import generation_integrity
+        integrity = generation_integrity(task['result'])
+        intact = integrity['status'] != 'invalid'
+        return {'passed': intact and task['state'] == 'generated' and task['result'].get('validation', {}).get('passed') is True,
+                'comparable': intact and task['state'] in ('generated', 'validation_failed'),
+                'artifact_integrity': integrity}
     def policy(self):
         return {'version': self.evaluator_id, 'minimum_tasks': 2,
-                'promotion': 'all candidate tasks pass; strictly more passes than baseline',
+                'promotion': 'all candidate tasks pass; more passes or confirmed paired generation efficiency',
+                'scoring_version': 'paired-efficiency-v2',
+                'efficiency_max_ratio': 0.8, 'efficiency_repetitions': 2,
                 'scope': 'generation compliance only; no precision or coverage-quality claim',
                 'max_session_seconds': 1800, 'max_repairs': 0}
     proposal_constraints = ('Preserve immutable assets, original max_cases, existing validators, generation-only scope. '

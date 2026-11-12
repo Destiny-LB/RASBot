@@ -17,6 +17,8 @@ def serve(runtime, port):
     engine = Service(runtime)
     from .evolution import Evolution, TERMINAL
     evolution = Evolution(runtime, engine)
+    from .campaigns import Campaigns
+    campaigns = Campaigns(evolution)
     from .evolution_selection import Selection
     selection = Selection(runtime)
     selection.pool()
@@ -36,6 +38,8 @@ def serve(runtime, port):
     stopping = threading.Event()
     def evolve():
         while not stopping.wait(5):
+            with settings.lock:
+                campaigns.tick_all()
             for item in evolution.list():
                 try:
                     with settings.lock:
@@ -49,6 +53,29 @@ def serve(runtime, port):
     threading.Thread(target=evolve, daemon=True).start()
 
     class Handler(BaseHTTPRequestHandler):
+        def parse_request(self):
+            if not super().parse_request():
+                return False
+            # Never trust DNS resolution or forwarded headers: only the actual
+            # loopback authority and listening port can address this service.
+            port = self.server.server_port
+            authorities = {f'127.0.0.1:{port}', f'localhost:{port}'}
+            if port == 80:
+                authorities.update(('127.0.0.1', 'localhost'))
+            hosts = self.headers.get_all('Host', [])
+            origins = self.headers.get_all('Origin', [])
+            host = hosts[0].lower() if len(hosts) == 1 else ''
+            allowed_origins = {f'http://{host}'}
+            if port == 80 and host in authorities:
+                name = host.removesuffix(':80')
+                allowed_origins.update((f'http://{name}', f'http://{name}:80'))
+            if (host not in authorities or len(origins) > 1 or
+                    (origins and origins[0].lower() not in allowed_origins)):
+                self.close_connection = True
+                self.reply({'error': 'Invalid Host or Origin'}, 403)
+                return False
+            return True
+
         def reply(self, data, status=200):
             raw = json.dumps(data, ensure_ascii=False).encode()
             self.send_response(status)
@@ -79,6 +106,11 @@ def serve(runtime, port):
                                           if not agent.execution or agent.eligible(k)]})
                 except ValueError as e:
                     self.reply({'error': str(e)}, 400)
+            elif path == '/api/campaigns':
+                self.reply({'campaigns': campaigns.list()})
+            elif path == '/api/experiences':
+                agent_id = parse_qs(urlparse(self.path).query).get('agent_id', ['precision'])[0]
+                self.reply({'experiences': campaigns.experience.list(agent_id)})
             elif path == '/api/settings':
                 self.reply(settings.public())
             elif path == '/api/evolution':
@@ -151,6 +183,12 @@ def serve(runtime, port):
                 path = urlparse(self.path).path
                 if path in ('/api/settings/connect', '/api/settings/disconnect'):
                     result = settings.connection(engine, enabled=path.endswith('/connect'))
+                elif path == '/api/campaigns/start':
+                    result = campaigns.create(data['objective'], data.get('agent_id', 'precision'),
+                        data.get('max_rounds', 3), data.get('round_minutes', 120),
+                        data.get('source_ids'), data.get('slugs'), data.get('model'))
+                elif path == '/api/campaigns/control':
+                    result = campaigns.control(data['id'], data['action'])
                 elif path == '/api/evolution/start':
                     agent_id = data.get('agent_id', 'precision')
                     proposed = Selection(runtime, agent_id).recommend()
@@ -160,7 +198,8 @@ def serve(runtime, port):
                         raise ValueError('Evaluation task is outside the fixed pool')
                     if 'session_minutes' in data:
                         raise ValueError('Use round_minutes (30, 60 or 120); session_minutes is no longer supported')
-                    result = evolution.create(sources, slugs, data.get('model'), data.get('round_minutes', 60), agent_id)
+                    result = evolution.create(sources, slugs, data.get('model'), data.get('round_minutes', 60), agent_id,
+                                                  development=data.get('development', getattr(runtime.registry.get(agent_id), 'file_evolution', False)))
                     result['selection'] = {'policy': proposed['policy'], 'pool_version': proposed['pool_version'],
                                            'pool': proposed['pool'], 'reason': proposed['reason'],
                                            'adjusted': sources != proposed['source_ids'] or slugs != proposed['slugs']}

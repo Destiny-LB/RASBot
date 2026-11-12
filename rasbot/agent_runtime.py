@@ -6,8 +6,10 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
-from .execution_package import snapshot as source_snapshot, materialize, intact
+from .task_contract import render
+from .execution_package import snapshot as source_snapshot, materialize, intact, materialize_references, references_intact
 
 
 def executable(engine):
@@ -56,6 +58,12 @@ def protected_digest(workspace):
     return result
 
 
+def asset_changes(expected, actual):
+    return {'added': sorted(actual.keys() - expected.keys()),
+            'deleted': sorted(expected.keys() - actual.keys()),
+            'modified': sorted(k for k in expected.keys() & actual.keys() if expected[k] != actual[k])}
+
+
 def bundle(runtime, task_id, engine, model=None, transport='cli'):
     task = runtime.store.get(task_id)
     if task['domain'] != 'precision' or task['state'] != 'prepared':
@@ -79,46 +87,15 @@ def bundle(runtime, task_id, engine, model=None, transport='cli'):
         files = source_snapshot(runtime.repo)
     execution_root = attempt / 'execution-package'
     package_hashes = materialize(execution_root, files)
+    reference_hashes = materialize_references(execution_root, runtime.repo, task['slug'])
     skill = files.get('openskill/01_generate_test_rules.md', skill)
     # Resolve existing Skill commands to the versioned execution scripts.
     skill = skill.replace('$REPO_ROOT/scripts/', '$EXECUTION_ROOT/scripts/')
     skill = skill.replace('${REPO_ROOT}/scripts/', '${EXECUTION_ROOT}/scripts/')
     trusted_scripts = {str(p): hashlib.sha256(p.read_bytes()).hexdigest()
                        for p in (runtime.repo / 'scripts').rglob('*.py')}
-    text = f'''# RASBot generation-only execution contract
-REPO_ROOT={runtime.repo.as_posix()}
-EXECUTION_ROOT={execution_root.as_posix()}
-WORKSPACE_DIR={workspace.as_posix()}
-TASK_SLUG={task['slug']}
-PYTHON={Path(sys.executable).as_posix()}
-
-Execute Step 1, including rule validation and ATK input materialization. This is
-an actual coding task, not a request for a plan. Read required docs and source,
-write test_suite.json, run the existing tools, and fix failures and warnings.
-Use this existing workspace; do not create another. Do NOT execute Step 2/3,
-submit hardware jobs, SSH, Docker, or atk task. Do not read ground truth,
-.agent_read_not_allow, or Step 4. Do not change repository tools, tasks, copied
-src/interfaces/template/atk_runnable assets, or the task configuration. Where
-the Skill suggests writing interfaces/constraints.md, put it in
-01_generate/report/constraints.md instead (the task prompt forbids asset edits).
-Use Python with -X utf8 on Windows. Report blocking permissions honestly.
-使用简体中文撰写解释、设计报告及最终回复；代码标识、路径、命令和机器可读字段保留原文。
-The platform independently validates artifacts after your process exits.
-Use EXECUTION_ROOT for ALL execution scripts and Skills, including relative
-scripts/... commands in task facts or Skill examples. REPO_ROOT is only the
-read-only source of docs and task facts. Run versioned Python scripts by their
-absolute EXECUTION_ROOT/scripts/... path. Do not edit EXECUTION_ROOT during
-execution: source changes must be proposed as a new version before evaluation.
-
-## Versioned execution overlay
-{overlay}
-
-## Task facts (generation-only scope above overrides the full execution scope)
-{prompt.read_text(encoding='utf-8')}
-
-## Pinned Step 1 Skill
-{skill}
-'''
+    text = render(runtime.repo, execution_root, workspace, task['slug'], skill,
+                  prompt.read_text(encoding='utf-8'), overlay)
     instruction = attempt / 'task.md'
     instruction.write_text(text, encoding='utf-8')
     args = command(engine, instruction, model) if transport == 'cli' else None
@@ -127,6 +104,7 @@ execution: source changes must be proposed as a new version before evaluation.
                 'instruction_sha256': hashlib.sha256(text.encode()).hexdigest(),
                 'workspace': str(workspace), 'attempt': str(attempt),
                 'execution_root': str(execution_root), 'execution_files': package_hashes,
+                'reference_files': reference_hashes,
                 'trusted_scripts': trusted_scripts,
                 'protected': protected_digest(workspace), 'scope': 'generate-only'}
     (attempt / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -135,6 +113,8 @@ execution: source changes must be proposed as a new version before evaluation.
 
 def validate(runtime, manifest):
     workspace = Path(manifest['workspace'])
+    if manifest.get('execution_root') and 'reference_files' in manifest and not references_intact(manifest['execution_root'], manifest['reference_files']):
+        return {'passed': False, 'reason': 'Fixed execution reference files changed'}
     if manifest.get('execution_root') and not intact(manifest['execution_root'], manifest['execution_files']):
         return {'passed': False, 'reason': 'Versioned execution sources changed during trial'}
     if 'trusted_scripts' in manifest:
@@ -142,8 +122,9 @@ def validate(runtime, manifest):
                    for p in (runtime.repo / 'scripts').rglob('*.py')}
         if current != manifest['trusted_scripts']:
             return {'passed': False, 'reason': 'Independent evaluator scripts changed'}
-    if protected_digest(workspace) != manifest['protected']:
-        return {'passed': False, 'reason': 'Protected task assets changed'}
+    changes = asset_changes(manifest['protected'], protected_digest(workspace))
+    if any(changes.values()):
+        return {'passed': False, 'reason': 'Protected task assets changed', 'asset_changes': changes}
     suite = workspace / '01_generate/submission/test_suite.json'
     if not suite.is_file():
         return {'passed': False, 'reason': 'test_suite.json missing; agent text is not evidence'}
@@ -172,19 +153,25 @@ def validate(runtime, manifest):
     if missing:
         return {'passed': False, 'reason': 'Required Step 1 deliverables missing', 'missing': missing}
     output = workspace / '02_atk_run/atk_input/test_suite.atk.json'
-    # A previously generated output must not satisfy this gate if preparation fails.
-    args = [sys.executable, '-X', 'utf8', str(runtime.repo / 'scripts/prepare_atk_submission.py'),
-            'prepare', '--task-dir', str(workspace), '--submission', str(suite), '-o', str(output)]
+    # Generate into a fresh directory so an older output cannot satisfy this gate.
+    # Keep the old artifact untouched unless this invocation succeeds without warnings.
+    output.parent.mkdir(parents=True, exist_ok=True)
     tool_env = dict(os.environ)
     deps = runtime.store.root / 'tool-deps'
     if deps.is_dir():
         tool_env['PYTHONPATH'] = str(deps)
     tool_env['PYTHONUTF8'] = '1'
-    result = subprocess.run(args, cwd=runtime.repo, capture_output=True, timeout=180,
-                            encoding='utf-8', errors='replace', env=tool_env)
-    log = result.stdout + result.stderr
-    (Path(manifest['attempt']) / 'validation.log').write_text(log, encoding='utf-8')
-    clean = result.returncode == 0 and 'WARNING:' not in log and output.is_file()
+    with tempfile.TemporaryDirectory(prefix='.rasbot-validation-', dir=output.parent) as temp:
+        fresh_output = Path(temp) / output.name
+        args = [sys.executable, '-X', 'utf8', str(runtime.repo / 'scripts/prepare_atk_submission.py'),
+                'prepare', '--task-dir', str(workspace), '--submission', str(suite), '-o', str(fresh_output)]
+        result = subprocess.run(args, cwd=runtime.repo, capture_output=True, timeout=manifest.get('validation_timeout', 180),
+                                encoding='utf-8', errors='replace', env=tool_env)
+        log = result.stdout + result.stderr
+        (Path(manifest['attempt']) / 'validation.log').write_text(log, encoding='utf-8')
+        clean = result.returncode == 0 and 'WARNING:' not in log and fresh_output.is_file()
+        if clean:
+            os.replace(fresh_output, output)
     return {'passed': clean, 'returncode': result.returncode, 'warnings': 'WARNING:' in log,
             'expected_count': expected, 'actual_count': len(rules),
             'suite_sha256': hashlib.sha256(suite.read_bytes()).hexdigest(),

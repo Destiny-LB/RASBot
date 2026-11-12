@@ -4,7 +4,7 @@
 
 迁移与安装说明见 [源码提交与跨机器运行](docs/portability.md)。当前完整托管工作流支持 Windows；Linux/macOS 凭据后端尚未实现。运行数据和模型凭据不随源码分发。
 
-AI 可靠性 Agent 自演进平台的 V0 工作台。RASBot 管理任务、Harness 版本、证据与校验；OpenCode 统一管理模型 Provider、凭据、会话和工具执行。
+AI 可靠性 Agent 自演进平台。RASBot 管理任务、Harness 版本、证据与校验；OpenCode 统一管理模型 Provider、凭据、会话和工具执行。
 
 ## 启动与模型配置
 
@@ -35,9 +35,9 @@ python -m rasbot serve --repo ..\PrecisionTesting-main --port 8765
 - OpenCode 原生对话面板、工具反馈、一次性权限处理与停止请求。
 - PrecisionTesting 工作区准备、执行契约、生成产物独立校验；校验器依赖可用 `python -m pip install -r requirements-tools.txt --target .rasbot/tool-deps` 隔离安装。
 - `generated` 仅代表生成产物校验通过，不是硬件精度通过。
-- 有界自主演进：模型诊断轨迹并提出执行提示词候选，平台登记谱系、运行成对任务、执行固定生成门禁、严格晋升及回滚。入口在“自主演进”页。
+- 有界自主演进：模型诊断轨迹并提出执行指令、Skill 和 Python 脚本候选，平台登记谱系、运行配对任务，以合规性和复测确认的生成效率决定晋升及回退。入口在“自主演进”页。
 - 元评价建议单独记录，不自动改变本轮评价规则；评价器自身的校准与演进、长期经验提炼、SDC 与容错插件尚未实现。
-- M1 正式生成与离线校验已经验收，硬件端到端尚未接入；部分目录任务缺少 prompt，暂不能执行。
+- 正式生成与离线校验已经验收，硬件端到端尚未接入；部分目录任务缺少 prompt，暂不能执行。
 
 当前为仅监听本机的单用户工作台。没有独立资源调度或执行沙箱；进程故障后的准备阶段恢复仍有限。
 
@@ -47,7 +47,7 @@ python -m rasbot serve --repo ..\PrecisionTesting-main --port 8765
 python -m unittest discover -s tests -v
 ```
 
-详细说明：[OpenCode 服务接入](docs/opencode-service.md)、[PrecisionTesting 接入](docs/precision-runtime.md)、[M1 验收](docs/m1-acceptance.md)、[M2 自主演进](docs/m2-evolution.md)、[M2 实测验收](docs/m2-acceptance.md)。
+完整说明见 [文档目录](docs/README.md)，包括架构、执行引擎、精度接入、自主演进、评价分析及硬件接入计划。
 
 ## 源码与本机数据隔离
 

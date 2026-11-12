@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from .quality import diversity
+from .evidence import task_evidence
 
 VERSION = 'traceability-shadow-v1'
 
@@ -99,6 +100,7 @@ def analyze_task(task):
     report = {'task_id': task['id'], 'agent_id': task['domain'], 'diagnosis': diagnose(task),
               'quality': {'status': 'unsupported'}}
     if task['domain'] != 'precision': return report
+    report['evidence'] = task_evidence(task)
     workspace = task['result'].get('workspace')
     if not workspace:
         report['quality'] = {'status': 'unavailable'}; return report

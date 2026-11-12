@@ -1,5 +1,7 @@
+import hashlib
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -81,6 +83,50 @@ class AgentTests(unittest.TestCase):
         result = validate(self.runtime, bundle(self.runtime, self.task, 'opencode'))
         self.assertEqual(result['reason'], 'Duplicate input specifications')
         self.assertEqual(result['duplicate_count'], 1)
+
+    @patch('rasbot.agent_runtime.executable', return_value=['fake-agent'])
+    def test_validation_requires_fresh_atk_output(self, _):
+        atk = self.ws / '02_atk_run'
+        (atk / 'atk_input').mkdir(parents=True)
+        (atk / 'atk_run_config.json').write_text('{"max_cases": 1}')
+        submission = self.ws / '01_generate/submission'
+        submission.mkdir()
+        (submission / 'test_suite.json').write_text(json.dumps([{'id': 1, 'inputs': {'shape': [1]}}]))
+        report = self.ws / '01_generate/report'
+        report.mkdir()
+        for name in ('test_rule_design.md', 'trigger_coverage.json', 'trigger_library.md'):
+            (report / name).write_text('valid')
+        output = atk / 'atk_input/test_suite.atk.json'
+        output.write_text('old output')
+        manifest = bundle(self.runtime, self.task, 'opencode')
+
+        for returncode, message, create, expected in (
+            (0, '', False, False),
+            (1, '', True, False),
+            (0, 'WARNING: problem', True, False),
+            (0, '', True, True),
+        ):
+            with self.subTest(returncode=returncode, message=message, create=create):
+                def prepare(args, **kwargs):
+                    fresh = Path(args[args.index('-o') + 1])
+                    self.assertNotEqual(fresh, output)
+                    self.assertFalse(fresh.exists())
+                    if create:
+                        fresh.write_text('new output')
+                    return subprocess.CompletedProcess(args, returncode, stdout=message, stderr='')
+                with patch('rasbot.agent_runtime.subprocess.run', side_effect=prepare):
+                    result = validate(self.runtime, manifest)
+                self.assertEqual(result['passed'], expected)
+                self.assertEqual(output.read_text(), 'new output' if expected else 'old output')
+                self.assertEqual(result['atk_input_sha256'],
+                    hashlib.sha256(b'new output').hexdigest() if expected else None)
+                self.assertEqual(list(output.parent.glob('.rasbot-validation-*')), [])
+
+        with patch('rasbot.agent_runtime.subprocess.run', side_effect=subprocess.TimeoutExpired('prepare', 180)):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                validate(self.runtime, manifest)
+        self.assertEqual(output.read_text(), 'new output')
+        self.assertEqual(list(output.parent.glob('.rasbot-validation-*')), [])
 
     @patch('rasbot.agent_runtime.subprocess.Popen', side_effect=OSError('launch failure'))
     @patch('rasbot.agent_runtime.executable', return_value=['fake-agent'])
