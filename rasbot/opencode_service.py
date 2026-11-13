@@ -222,6 +222,9 @@ class Service:
         # v2 retains the previous outcome while a subsequent turn is running.
         # Only the latest idle marker closes the currently observed transcript.
         outcome = context[-1].get('outcome') if context and context[-1].get('type') == 'idle' else None
+        result.pop('engine_completed_ms', None)
+        if outcome:
+            result['engine_completed_ms'] = context[-1].get('time', {}).get('created')
         state = 'waiting_permission' if permissions else 'engine_running'
         if outcome in ('failed', 'interrupted'):
             state = 'engine_failed' if outcome == 'failed' else 'cancelled'

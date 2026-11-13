@@ -3,7 +3,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from rasbot.execution_package import apply_changes, materialize, intact
+from rasbot.precision_package import apply_changes, materialize, intact
 from rasbot.agent_runtime import bundle, validate
 import test_evolution
 import test_agent_runtime

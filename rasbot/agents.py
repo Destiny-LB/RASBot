@@ -19,6 +19,37 @@ class PrecisionAgent:
     evaluator_id = 'generation-gate-efficiency-v2'
     evolution_goal = '提高正式用例生成合规性'
     def __init__(self, repo): self.repo = repo
+    def snapshot_execution(self):
+        from .precision_package import snapshot
+        return snapshot(self.repo)
+    def validate_execution(self, files):
+        from .precision_package import validate_files
+        return validate_files(files)
+    def apply_execution_changes(self, parent, changes):
+        from .precision_package import apply_changes
+        return apply_changes(parent, changes)
+    def bind_development_parent(self, dev, files):
+        from .task_contract import adapt
+        from .execution_package import hashes
+        dev['parent_file_hashes'] = hashes({name: adapt(content) if name == 'openskill/01_generate_test_rules.md' else content for name, content in files.items()})
+    def prepare_development(self, runtime, source, root, body):
+        from .precision_development import prepare
+        return prepare(self, runtime, source, root, body)
+    def development_prompt(self, dev, proposal):
+        from .precision_development import prompt
+        return prompt(dev, proposal)
+    def development_asset_changes(self, dev):
+        from .precision_development import changes
+        return changes(dev)
+    def collect_development(self, dev):
+        from .precision_development import collect
+        return collect(dev['package'], dev['original_files'], dev.get('reference_files'))
+    def observe_development(self, dev):
+        from .precision_development import observe
+        return observe(dev)
+    def check_development(self, runtime, dev, seconds):
+        from .development_checks import check
+        return check(runtime, self.id, dev, seconds)
     def catalog(self):
         directory = self.repo / 'tasks'
         return sorted(p.name for p in directory.iterdir() if p.is_dir()) if directory.is_dir() else []
@@ -39,6 +70,9 @@ class PrecisionAgent:
             for file in sorted((self.repo / folder).rglob('*')):
                 if file.is_file() and '__pycache__' not in file.parts: yield file
         yield Path(__file__).with_name('agent_runtime.py')
+        yield Path(__file__).with_name('precision_development.py')
+        yield Path(__file__).with_name('precision_package.py')
+        yield Path(__file__).with_name('precision_warnings.py')
     def evaluate(self, task):
         from .evidence import generation_integrity
         integrity = generation_integrity(task['result'])

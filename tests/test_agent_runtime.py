@@ -104,6 +104,7 @@ class AgentTests(unittest.TestCase):
             (0, '', False, False),
             (1, '', True, False),
             (0, 'WARNING: problem', True, False),
+            (0, "WARNING: library.source_path should be 'docs/trigger_library.md'", True, True),
             (0, '', True, True),
         ):
             with self.subTest(returncode=returncode, message=message, create=create):

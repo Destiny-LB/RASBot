@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from rasbot.task_contract import render
-from rasbot.execution_package import materialize, materialize_references, references_intact
+from rasbot.precision_package import materialize, materialize_references, references_intact
 from rasbot.development import collect
 from rasbot.agent_runtime import asset_changes
 from rasbot.evolution import trajectory

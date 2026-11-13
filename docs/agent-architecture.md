@@ -29,3 +29,15 @@
 原精度评测池沿用 `.rasbot/evaluation-pool.json`，其他 Agent 使用独立池文件。`champions` 按 Agent 键管理采用版本，晋升或回滚只影响对应 Agent。既有精度版本与模型默认配置保持不变。
 
 测试使用独立的非精度 fixture 验证目录/准备/样本/版本隔离，以及自定义评价器的晋升与回滚。这是扩展接口测试，不代表真实 SDC 或容错实验已验收。
+
+
+### 开发适配器边界与诊断反馈
+
+领域适配器负责 `prepare_development`、`development_prompt`、`development_asset_changes`、`collect_development`、`observe_development` 和 `check_development`。开发编排器只管理会话、预算、检查点和冻结状态。Precision 的目录、Skill、ATK 参考资产和契约实现集中在 `precision_development.py`；现有 `development.collect` 仅保留兼容入口。其他领域仍需实现自己的执行和评价适配器，此次重构不代表已接入 SDC 或容错。
+
+开发准备时记录源码哈希，结束时记录实际新增、修改、删除的文件及组件，经验特征不再将提案当作实际修改证据。历史缺少哈希的记录标为未知。经验召回与下一轮选择携带经过筛选的诊断工作区验收原因、相对路径及源码变更摘要；不返回正式评测任务内容、原始日志或绝对路径。
+
+
+### 执行包领域解耦
+
+`execution_package.py` 只负责安全相对路径、通用文件清单、文本及固定字节资产落盘、哈希与完整性检查，不选择领域目录、不改写内容。Precision 的可编辑文件白名单、Python 语法检查、Skill 路径适配、Trigger Library 与当前任务 runnable 依赖由 `precision_package.py` 实现。演进引擎通过适配器的 `snapshot_execution`、`validate_execution`、`apply_execution_changes` 操作候选源码。新增领域需要提供自己的策略，不能直接用通用路径合法性代替领域授权。

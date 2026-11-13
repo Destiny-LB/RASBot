@@ -14,7 +14,9 @@ class GateTests(unittest.TestCase):
     def test_shell_success_without_artifacts_is_rejected(self):
         run = self.evo.tick(self.ready()['id']); self.idle()
         run = self.evo.tick(run['id'])
-        self.assertEqual(run['state'], 'failed')
+        self.assertEqual(run['state'], 'development_ready')
+        self.assertNotIn('candidate', run)
+        self.assertEqual(len(run['development']['checkpoints']), 1)
         result = run['development']['check']
         self.assertFalse(result['passed'])
         self.assertIn('missing', result['validation']['reason'])

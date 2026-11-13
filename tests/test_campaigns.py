@@ -19,6 +19,7 @@ class CampaignTests(unittest.TestCase):
         if candidate:
             body = {'agent_id': 'precision', 'agent_instructions': 'archived donor', 'execution_files': {}}
             run['candidate'] = self.runtime.store.version(body, run['baseline'])
+            run['trials'] = [{'task_id': self.task, 'comparable': True}]
         run['state'] = state
         self.evo.save(run)
         return run

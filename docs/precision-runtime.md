@@ -54,3 +54,8 @@ generated 仅表示上述生成门禁通过，不代表精度故障已检出，�
 运行记录在 .rasbot/m1-run.json；实验产物位于该任务的 runs 目录。这是历史生成验收记录路径，不作为程序输入。
 
 实际运行的任务 ID、会话 ID、文件摘要和验收记录保存在本机数据目录的 reports/ 下，不随源码发布。
+
+
+### 验收警告分级
+
+固定策略precision-warning-severity-v1保存warning_details。仅library.source_path的描述性标签警告为非阻塞；其canonical内容和SHA校验仍须通过。重复输入、覆盖账本冲突、参考资产一致性问题及未知警告均阻塞；返回码非零或缺少新物化产物仍失败。passed可以为true且warnings为true，调用方应以passed及warning_details判断，不应将所有提示等同失败。

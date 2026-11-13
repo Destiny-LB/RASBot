@@ -87,5 +87,6 @@ class DevelopmentTests(unittest.TestCase):
 
     def test_budget_reserves_development_without_extending_round(self):
         run=self.ready();p=run['policy']
-        self.assertEqual(p['development_seconds'],720)
-        self.assertEqual(p['round_seconds'],p['proposal_seconds']+p['development_seconds']+p['max_trials']*p['trial_seconds']+p['overhead_seconds'])
+        self.assertEqual(p['round_seconds'],7200)
+        self.assertEqual(p['development_seconds'],900)
+        self.assertEqual(p['round_seconds'],p['proposal_seconds']+p['development_seconds']+p['initial_trials']*p['trial_seconds']+p['overhead_seconds'])

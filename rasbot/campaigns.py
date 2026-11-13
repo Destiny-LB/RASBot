@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from .core import now
 from .evolution import LOCK, TERMINAL
 from .evolution_selection import Selection
-from .experience import Experience
+from .experience import Experience, features, diagnostic
 from .preferences import evolution_model
 
 STRATEGIES = (
@@ -13,6 +13,33 @@ STRATEGIES = (
     '优先检验 Step 1 Skill 的分析步骤与工具使用流程改进。',
     '优先检验 Python 辅助脚本或生成脚本改进，保留独立验收标准。',
 )
+
+
+def select_next(runs, adopted):
+    # Only comparable rejected candidates from the current baseline are donors.
+    donors = [r for r in runs if r['state'] == 'rejected' and r.get('candidate') and r.get('trials')
+              and r.get('baseline_source', r['baseline']) == adopted
+              and all(t.get('comparable', False) and not t.get('manual_intervention')
+                      for t in r.get('trials', []))]
+    def rank(run):
+        scores = run.get('scores') or {}
+        return (scores.get('candidate_passes', 0) - scores.get('baseline_passes', 0),
+                scores.get('candidate_passes', 0), run.get('created', ''))
+    donor = max(donors, key=rank) if donors else None
+    last = runs[-1] if runs else {}
+    stage = features(last)['failure_stage']
+    if stage == 'development':
+        hypothesis = '修复独立开发验收失败；先复现诊断任务失败，再验证最小修改，不改变验收器。'
+    elif stage == 'evaluation':
+        hypothesis = '针对已观察到的合规性或效率不足提出单一可证伪假设；禁止读取正式评测任务。'
+    else:
+        hypothesis = STRATEGIES[0]
+    return {'parent': donor['candidate'] if donor else None,
+            'evidence_run_id': donor['id'] if donor else last.get('id'),
+            'hypothesis': hypothesis, 'policy': 'evidence-selection-v1',
+            'diagnostic': diagnostic(last),
+            'reason': 'best comparable rejected candidate on current baseline' if donor else
+                      'current adopted version; no eligible historical donor'}
 
 
 class Campaigns:
@@ -43,8 +70,8 @@ class Campaigns:
         with LOCK:
             if not isinstance(objective, str) or not 1 <= len(objective.strip()) <= 2000:
                 raise ValueError('Describe an objective in 1–2000 characters')
-            if type(max_rounds) is not int or not 1 <= max_rounds <= 12 or round_minutes not in (30, 60, 120):
-                raise ValueError('Use 1–12 rounds and 30/60/120 minutes per round')
+            if type(max_rounds) is not int or not 1 <= max_rounds <= 12 or round_minutes not in (60, 120, 240):
+                raise ValueError('Use 1–12 rounds and 60/120/240 minutes per round')
             if any(x['agent_id'] == agent_id and x['state'] in ('active', 'stopping', 'paused', 'needs_attention') for x in self.list()):
                 raise ValueError('Finish or stop the existing objective for this Agent first')
             agent = self.runtime.registry.get(agent_id)
@@ -141,18 +168,19 @@ class Campaigns:
             if any(r['state'] not in TERMINAL and r.get('agent_id', 'precision') == item['agent_id'] for r in self.evo.list()):
                 return self.save(item)  # A manually initiated round owns this Agent slot.
             index = len(owned)
-            donor = None
-            if index % 2:
-                donors = [r for r in reversed(owned) if r['state'] == 'rejected' and r.get('candidate')]
-                donor = donors[0]['candidate'] if donors else None
+            selection = select_next(owned, self.runtime.adopted(item['agent_id']))
+            donor = selection['parent']
+            query = features(owned[-1]) if owned else {}
+            if owned:
+                query['evaluator_id'] = owned[-1]['evaluator_id']
             context = {'campaign_id': identity, 'round_index': index, 'objective': item['objective'],
-                       'hypothesis': STRATEGIES[index % len(STRATEGIES)],
-                       'experiences': self.experience.recall(item['agent_id'])}
+                       'hypothesis': selection['hypothesis'], 'selection': selection,
+                       'experiences': self.experience.recall(item['agent_id'], query)}
             minutes_left = (datetime.fromisoformat(item['deadline']) - datetime.now(timezone.utc)).total_seconds() / 60
-            if minutes_left < 30:
+            if minutes_left < 60:
                 item.update(state='budget_exhausted')
                 return self.save(item)
-            budget = max(m for m in (30, 60, 120) if m <= min(item['round_minutes'], minutes_left))
+            budget = max(m for m in (60, 120, 240) if m <= min(item['round_minutes'], minutes_left))
             run = self.evo.create(item['source_ids'], item['slugs'], item['model'], budget,
                                   item['agent_id'], development=True, proposal_parent=donor,
                                   campaign_context=context)

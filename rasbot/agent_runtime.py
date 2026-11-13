@@ -8,8 +8,9 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from .precision_warnings import classify
 from .task_contract import render
-from .execution_package import snapshot as source_snapshot, materialize, intact, materialize_references, references_intact
+from .precision_package import snapshot as source_snapshot, materialize, intact, materialize_references, references_intact
 
 
 def executable(engine):
@@ -169,10 +170,12 @@ def validate(runtime, manifest):
                                 encoding='utf-8', errors='replace', env=tool_env)
         log = result.stdout + result.stderr
         (Path(manifest['attempt']) / 'validation.log').write_text(log, encoding='utf-8')
-        clean = result.returncode == 0 and 'WARNING:' not in log and fresh_output.is_file()
+        warning_details = classify(log)
+        clean = result.returncode == 0 and not any(w['blocking'] for w in warning_details) and fresh_output.is_file()
         if clean:
             os.replace(fresh_output, output)
-    return {'passed': clean, 'returncode': result.returncode, 'warnings': 'WARNING:' in log,
+    return {'passed': clean, 'returncode': result.returncode, 'warnings': bool(warning_details), 'warning_details': warning_details,
+            'warning_policy': 'precision-warning-severity-v1',
             'expected_count': expected, 'actual_count': len(rules),
             'suite_sha256': hashlib.sha256(suite.read_bytes()).hexdigest(),
             'atk_input_sha256': hashlib.sha256(output.read_bytes()).hexdigest() if clean else None,

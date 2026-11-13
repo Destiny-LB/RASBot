@@ -51,3 +51,30 @@ class SelectionTests(unittest.TestCase):
         r = self.selection.recommend()
         self.assertEqual(r['source_ids'], [newest])
         self.assertEqual(r['slugs'], ['b', 'a'])
+
+    def test_rotation_changes_holdout_before_diagnosis(self):
+        (self.runtime.repo / 'tasks/c').mkdir()
+        (self.runtime.repo / 'prompts/c.md').write_text('task')
+        self.task('a', 'validation_failed')
+        first = self.selection.recommend()
+        second = self.selection.recommend(first['source_ids'], first['slugs'])
+        self.assertEqual(first['source_ids'], second['source_ids'])
+        self.assertNotEqual(first['slugs'], second['slugs'])
+        third = self.selection.recommend(second['source_ids'], second['slugs'])
+        self.assertEqual(first['slugs'], third['slugs'])
+
+    def test_rotation_can_change_diagnosis(self):
+        self.task('a', 'validation_failed')
+        self.task('b', 'generated')
+        first = self.selection.recommend()
+        second = self.selection.recommend(first['source_ids'], first['slugs'])
+        self.assertNotEqual(first['source_ids'], second['source_ids'])
+        self.assertTrue(second['ready'])
+
+    def test_only_one_combination_and_stale_selection(self):
+        self.task('a', 'generated')
+        first = self.selection.recommend()
+        second = self.selection.recommend(first['source_ids'], first['slugs'])
+        self.assertEqual(first, second)
+        self.assertEqual(second['alternative_count'], 0)
+        self.assertEqual(first, self.selection.recommend(['missing'], ['missing']))

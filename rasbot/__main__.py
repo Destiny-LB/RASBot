@@ -15,7 +15,7 @@ def serve(runtime, port):
     from .settings import Settings
     settings = Settings(runtime.store)
     engine = Service(runtime)
-    from .evolution import Evolution, TERMINAL
+    from .evolution import Evolution
     evolution = Evolution(runtime, engine)
     from .campaigns import Campaigns
     campaigns = Campaigns(evolution)
@@ -127,7 +127,10 @@ def serve(runtime, port):
             elif path == '/api/evolution/recommendation':
                 try:
                     agent_id = parse_qs(urlparse(self.path).query).get('agent_id', ['precision'])[0]
-                    self.reply(Selection(runtime, agent_id).recommend())
+                    query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                    previous_sources = query.get('source_id', []) if query.get('rotate') == ['1'] else None
+                    previous_slugs = query.get('slug', []) if previous_sources is not None else None
+                    self.reply(Selection(runtime, agent_id).recommend(previous_sources, previous_slugs))
                 except ValueError as e:
                     self.reply({'error': str(e)}, 400)
             elif path == '/api/analysis':
@@ -197,8 +200,8 @@ def serve(runtime, port):
                     if any(s not in proposed['pool'] for s in slugs):
                         raise ValueError('Evaluation task is outside the fixed pool')
                     if 'session_minutes' in data:
-                        raise ValueError('Use round_minutes (30, 60 or 120); session_minutes is no longer supported')
-                    result = evolution.create(sources, slugs, data.get('model'), data.get('round_minutes', 60), agent_id,
+                        raise ValueError('Use round_minutes (60, 120 or 240); session_minutes is no longer supported')
+                    result = evolution.create(sources, slugs, data.get('model'), data.get('round_minutes', 120), agent_id,
                                                   development=data.get('development', getattr(runtime.registry.get(agent_id), 'file_evolution', False)))
                     result['selection'] = {'policy': proposed['policy'], 'pool_version': proposed['pool_version'],
                                            'pool': proposed['pool'], 'reason': proposed['reason'],
