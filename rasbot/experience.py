@@ -25,7 +25,10 @@ def diagnostic(run):
         return [p for p in values[:50] if isinstance(p, str) and '\\' not in p
                 and ':' not in p and not PurePosixPath(p).is_absolute()
                 and '..' not in PurePosixPath(p).parts]
-    result = {'stage': features(run)['failure_stage']}
+    decision=run.get('decision') or {}
+    result = {'stage': features(run)['failure_stage'],
+              'decision_reason':decision.get('reason'),'failure_cause':decision.get('cause'),
+              'promotion_basis':decision.get('basis'),'cost_role':'budget_and_diagnostics_only'}
     # Platform-defined messages only; never forward arbitrary evaluator text.
     reasons = {'Protected task assets changed', 'Required Step 1 deliverables missing',
                'Duplicate input specifications', 'Malformed case inputs',
@@ -41,6 +44,8 @@ def diagnostic(run):
                                 'components': observed.get('components', [])}
     for key in ('expected_count', 'actual_count', 'duplicate_count', 'warnings'):
         if type(verdict.get(key)) in (int, bool): result[key] = verdict[key]
+    from .meta_promotion import summary
+    result['meta_evaluation']=summary(run)
     return result
 
 
@@ -65,12 +70,14 @@ class Experience:
                 'development_check': run.get('development', {}).get('check'),
                 'scope': run['policy'].get('scope'), 'created': now(),
                 'interpretation': 'Observed experiment only; diagnosis is an unverified hypothesis; historical promotion may have been rolled back'}
+        from .meta_promotion import summary
+        item['meta_evaluation']=summary(run)
         item.update(features(run))
         item['diagnostic'] = diagnostic(run)
         item['evidence_refs'] = {'run_id': run['id']}
         item['applicability'] = {'agent_id': item['agent_id'], 'evaluator_id': item['evaluator_id'], 'scope': item['scope']}
         with self.store.connect() as c:
-            c.execute('INSERT OR IGNORE INTO experiences VALUES(?,?,?,?)',
+            c.execute('INSERT INTO experiences VALUES(?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET body=excluded.body',
                       (run['id'], item['agent_id'], json.dumps(item, ensure_ascii=False), item['created']))
         return item
 
@@ -91,5 +98,5 @@ class Experience:
                                     for k in keys), reverse=True)
         safe = ('run_id', 'hypothesis', 'outcome', 'scores', 'baseline', 'candidate',
                 'evaluator_id', 'scope', 'interpretation', 'failure_stage',
-                'failure_code', 'changed_component', 'applicability', 'evidence_refs', 'diagnostic')
+                'failure_code', 'changed_component', 'meta_evaluation', 'applicability', 'evidence_refs', 'diagnostic')
         return [{k: item.get(k) for k in safe} for item in items[:6]]

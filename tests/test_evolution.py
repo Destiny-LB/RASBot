@@ -15,6 +15,19 @@ class EvolutionTests(unittest.TestCase):
         self.runtime.store.transition(self.task, 'prepared', 'generated', {'validation': {'passed': True}})
         self.client = FakeClient()
         self.evo = Evolution(self.runtime, Service(self.runtime, self.client))
+        adapter = self.runtime.registry.get('precision')
+        legacy_policy = dict(adapter.policy(), scoring_version='meta-generation-v3')
+        adapter.policy = lambda: dict(legacy_policy)
+        self.risk_support = patch('rasbot.risk_profile.supported',return_value=True)
+        self.risk_support.start();self.addCleanup(self.risk_support.stop)
+        from rasbot.evaluation_policy import EVALUATOR_ID
+        from rasbot.meta_evaluation import WEIGHTS
+        def fixture_evaluation(task,*args,**kwargs):
+            passed=task['result'].get('validation',{}).get('passed') is True
+            metrics=dict.fromkeys(WEIGHTS,1.0 if passed else 0.0)
+            return dict(evaluator_version=EVALUATOR_ID,validity={'eligible':True},quality={'metrics':metrics},artifact_sha256={'fixture':'fixed'})
+        evaluation=patch('rasbot.meta_evaluation.evaluate',side_effect=fixture_evaluation)
+        evaluation.start();self.addCleanup(evaluation.stop)
         self.model = {'id': 'fixed', 'providerID': 'test'}
 
     def create(self):
@@ -32,14 +45,21 @@ class EvolutionTests(unittest.TestCase):
         return self.evo.tick(run['id'])
 
     def finish(self, run, baseline_passes, candidate_passes, infrastructure=False):
-        counts = {'baseline': baseline_passes, 'candidate': candidate_passes}
-        for t in run['trials']:
-            passed = counts[t['role']] > 0
-            counts[t['role']] -= 1
-            state = 'generated' if passed else ('engine_failed' if infrastructure else 'validation_failed')
-            self.runtime.store.transition(t['task_id'], 'queued', state, {'validation': {'passed': passed}})
-        for _ in range(5):
-            run = self.evo.tick(run['id'])
+        for repetition in range(2):
+            counts = {'baseline': baseline_passes, 'candidate': candidate_passes}
+            for t in run['trials']:
+                if t.get('replicate',0)!=repetition:continue
+                from datetime import datetime,timezone,timedelta
+                t['started']=(datetime.now(timezone.utc)-timedelta(seconds=100)).isoformat()
+                passed=counts[t['role']]>0;counts[t['role']]-=1
+                state='generated' if passed else ('engine_failed' if infrastructure else 'validation_failed')
+                self.runtime.store.transition(t['task_id'],'queued',state,{'validation':{'passed':passed}})
+            self.evo.save(run)
+            count=len(run['trials'])
+            for _ in range(count+1):
+                run=self.evo.tick(run['id'])
+                if run['state']!='evaluating' or len(run['trials'])>count:break
+            if run['state']!='evaluating':break
         return run
 
     def test_candidate_is_immutable_child_and_meta_advisory(self):
@@ -207,3 +227,12 @@ class AgentConcurrencyTests(unittest.TestCase):
         page=self.evo.page()
         self.assertNotIn(active['id'],[r['id'] for r in page['runs']])
         self.assertEqual(page['active_agents'],['precision'])
+
+    def test_unknown_policy_cannot_fall_back_to_pass_count_promotion(self):
+        run=EvolutionTests.proposal(self,self.create())
+        run['policy']['scoring_version']='unknown-policy'
+        self.evo.save(run)
+        result=EvolutionTests.finish(self,run,0,2)
+        self.assertEqual(result['state'],'inconclusive')
+        self.assertEqual(result['decision']['reason'],'unsupported_evaluation_policy')
+        self.assertEqual(self.runtime.adopted('precision'),run['baseline_source'])

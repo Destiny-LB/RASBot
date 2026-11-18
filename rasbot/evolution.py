@@ -1,9 +1,11 @@
 """Durable, bounded evolution of execution instructions and sources."""
+from .evaluation_policy import QUALITY_POLICY
 import hashlib
 import json
 import threading
 import uuid
-from .evolution_scoring import elapsed, decide
+from .trial_timing import elapsed
+from .meta_promotion import decide
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from .core import now
@@ -115,8 +117,8 @@ class Evolution:
             if type(development) is not bool: raise ValueError('development must be boolean')
             if development and not getattr(adapter, 'file_evolution', False):
                 raise ValueError('Agent does not support candidate development')
-            if round_minutes not in (60, 120, 240):
-                raise ValueError('Round budget must be 60, 120 or 240 minutes')
+            if round_minutes not in (60, 120, 180):
+                raise ValueError('Round budget must be 60, 120 or 180 minutes')
             if any(r['state'] not in TERMINAL and r.get('agent_id', 'precision') == agent_id for r in self.list()):
                 raise ValueError('当前 Agent 已有演进任务正在运行，请等待完成或停止后再启动。')
             if not source_ids or not isinstance(slugs, list) or not 2 <= len(slugs) <= 3 or len(set(slugs)) != len(slugs):
@@ -138,16 +140,26 @@ class Evolution:
             with self.store.connect() as c:
                 baseline_body = json.loads(c.execute('SELECT body FROM versions WHERE id=?', (baseline,)).fetchone()[0])
             file_evolution = getattr(adapter, 'file_evolution', False)
-            if file_evolution and 'execution_files' not in baseline_body:
+            if file_evolution and ('execution_files' not in baseline_body or (getattr(adapter,'execution_scope',None) and baseline_body.get('execution_scope')!=adapter.execution_scope)):
                 baseline_body.update(name='frozen-execution-baseline', agent_id=agent_id,
-                                     execution_files=adapter.validate_execution(adapter.snapshot_execution()))
+                                     execution_files=adapter.validate_execution(adapter.expand_execution(baseline_body.get('execution_files',{})) if hasattr(adapter,'expand_execution') else adapter.snapshot_execution()))
+                if getattr(adapter,'execution_scope',None):
+                    from .precision_package import CORE
+                    if CORE<=baseline_body['execution_files'].keys():baseline_body['execution_scope']=adapter.execution_scope
                 baseline = self.store.version(baseline_body, baseline)
             if proposal_parent:
                 with self.store.connect() as c:
                     row = c.execute('SELECT body FROM versions WHERE id=?', (proposal_parent,)).fetchone()
                 if not row or json.loads(row[0]).get('agent_id', 'precision') != agent_id:
                     raise ValueError('Proposal parent must belong to the same Agent')
-                adapter.validate_execution(json.loads(row[0]).get('execution_files', {}))
+                parent_body=json.loads(row[0])
+                adapter.validate_execution(parent_body.get('execution_files', {}))
+                if getattr(adapter,'execution_scope',None) and parent_body.get('execution_scope')!=adapter.execution_scope:
+                    parent_body.update(execution_files=adapter.expand_execution(parent_body.get('execution_files',{})))
+                    from .precision_package import CORE
+                    if CORE<=parent_body['execution_files'].keys():
+                        parent_body['execution_scope']=adapter.execution_scope
+                        proposal_parent=self.store.version(parent_body,proposal_parent)
             identity = uuid.uuid4().hex
             root = self.store.root / 'evolution' / identity
             root.mkdir(parents=True)
@@ -155,12 +167,12 @@ class Evolution:
             assets = {}
             for file in adapter.assets(list(dict.fromkeys(slugs + [t['slug'] for t in sources]))):
                 assets[str(file)] = hashlib.sha256(file.read_bytes()).hexdigest()
-            for name in ('agents.py', 'evolution.py', 'execution_package.py', 'evolution_scoring.py', 'development.py', 'development_checks.py', 'evidence.py', 'task_contract.py', 'precision_development.py', 'precision_package.py', 'precision_warnings.py', 'trial_timing.py', 'opencode_service.py'):
+            for name in ('agents.py', 'evolution.py', 'execution_package.py', 'evaluation_policy.py', 'meta_promotion.py', 'meta_evaluation.py', 'risk_profile.py', 'evaluation_budget.py', 'analysis.py', 'development.py', 'development_checks.py', 'evidence.py', 'task_contract.py', 'precision_development.py', 'precision_package.py', 'precision_toolchain.py', 'toolchain_contracts.py', 'precision_warnings.py', 'trial_timing.py', 'opencode_service.py'):
                 evaluator = Path(__file__).with_name(name)
                 assets[str(evaluator)] = hashlib.sha256(evaluator.read_bytes()).hexdigest()
             frozen = root / 'evaluator-snapshot'
             frozen.mkdir()
-            for name in ('agents.py', 'agent_runtime.py', 'evolution.py', 'execution_package.py', 'evolution_scoring.py', 'development.py', 'development_checks.py', 'evidence.py', 'task_contract.py', 'precision_development.py', 'precision_package.py', 'precision_warnings.py', 'trial_timing.py', 'opencode_service.py'):
+            for name in ('agents.py', 'agent_runtime.py', 'evolution.py', 'execution_package.py', 'evaluation_policy.py', 'meta_promotion.py', 'meta_evaluation.py', 'risk_profile.py', 'evaluation_budget.py', 'analysis.py', 'development.py', 'development_checks.py', 'evidence.py', 'task_contract.py', 'precision_development.py', 'precision_package.py', 'precision_toolchain.py', 'toolchain_contracts.py', 'precision_warnings.py', 'trial_timing.py', 'opencode_service.py'):
                 (frozen / name).write_bytes(Path(__file__).with_name(name).read_bytes())
             run = {'id': identity, 'state': 'planned', 'baseline': baseline, 'baseline_source': baseline_source,
                    'proposal_parent': proposal_parent or baseline, 'campaign_context': campaign_context or {},
@@ -172,20 +184,21 @@ class Evolution:
                    'root': str(root), 'engine_url': self.engine.client.url, 'created': now()}
             total = round_minutes * 60
             proposal = min(300, total // 10)
-            max_trials = (4 if run['policy'].get('scoring_version') == 'paired-efficiency-v2' else 2) * len(slugs)
+            max_trials = 4 * len(slugs)
             development_seconds = min(900, total // 5) if development else 0
-            trial = (total - proposal - development_seconds - total // 10) // (2 * len(slugs))
+            trial_count = 2 * len(slugs)
+            trial = (total - proposal - development_seconds - total // 10) // trial_count
             run['policy'].pop('max_session_seconds', None)
-            run['policy'].update(round_seconds=total, proposal_seconds=proposal,
+            run['policy'].update(budget_version='first-pair-priority-v1', round_seconds=total, proposal_seconds=proposal,
                                  trial_seconds=trial, development_seconds=development_seconds,
-                                 development_check='development-artifact-gate-v1',
+                                 development_check='development-artifact-gate-v2' if run['policy'].get('scoring_version')==QUALITY_POLICY else 'development-artifact-gate-v1',
                                  max_trials=max_trials, initial_trials=2 * len(slugs), proposal_retries=2,
-                                 overhead_seconds=total - proposal - development_seconds - trial * (2 * len(slugs)))
+                                 overhead_seconds=total - proposal - development_seconds - trial * trial_count)
             run['evaluator_id'] = digest({'policy': run['policy'], 'assets': assets})
             (frozen / 'policy.json').write_text(json.dumps(run['policy'], indent=2), encoding='utf-8')
             with self.store.connect() as c:
                 c.execute('INSERT INTO evolution_runs VALUES(?,?,?)', (identity, json.dumps(run), now()))
-            return self.save(run, 'planned: one proposal, bounded paired evaluation and optional efficiency confirmation')
+            return self.save(run, 'planned: one proposal, bounded paired evaluation and quality confirmation')
 
     def unchanged(self, run):
         return all(Path(p).is_file() and hashlib.sha256(Path(p).read_bytes()).hexdigest() == h
@@ -251,14 +264,13 @@ class Evolution:
                     prompt = prompt.replace('Write only an overlay compatible with the immutable contract.',
                                             'All proposed instructions and sources must obey the immutable contract.')
                     prompt += ('\nAdditional optional key file_changes: object mapping relative paths to COMPLETE UTF-8 '
-                               'replacement file contents, not patches. Omitted or {} means no file changes. '
-                               'You may improve openskill/01_generate_test_rules.md and top-level scripts/*.py '
-                               '(including new helpers), except create_workspace.py and verify_precision_report.py. '
-                               'No deletions. These sources are copied into an execution package; never edit the repository. '
-                               'Workspace provisioning, task assets, hardware restrictions and the independent platform '
-                               'evaluator are fixed. Changing an execution-side validator cannot change the acceptance gate. '
-                               'Use EXECUTION_ROOT for versioned scripts/skills; REPO_ROOT for read-only docs/tasks. '
-                               'Explain the source change in diagnosis. Parent sources follow:\n' +
+                               'replacement UTF-8 contents, or null to delete an auxiliary module. Omitted or {} means no changes. '
+                               'Precision scope: all four openskill MDs; scripts/create_workspace.py, prepare_atk_submission.py, verify_schema.py, verify_trigger_coverage.py; '
+                               'prompts/prompt_template.md and generate_prompt__repo_version_DS_aclnnName.py; docs/trigger_library.md, simplified_atk_test_rules__json.md, decorated_atk_operator_schema__yaml.md. '
+                               'Auxiliary directories: scripts/generation, scripts/common, prompts/fragments, docs/generation, tests/generation. Core entries cannot be deleted. '
+                               'Fixed task facts, atk_queue, hardware restrictions and independent evaluation are outside this scope. '
+                               'Changing candidate validators or documents cannot change acceptance criteria. All four Skills are versioned, but only generation effects are evaluated. '
+                               'Parent sources follow:\n' +
                                json.dumps(parent.get('execution_files', {}), ensure_ascii=False))
                 (Path(run['root']) / 'proposal-prompt.txt').write_text(prompt, encoding='utf-8')
                 run.update(state='proposal_unknown', started=now())
@@ -294,7 +306,9 @@ class Evolution:
                     assert set(proposal) in (required, required | {'file_changes'})
                     assert all(isinstance(proposal[k], str) and 0 < len(proposal[k]) <= 16000 for k in required)
                     assert run.get('file_evolution') or 'file_changes' not in proposal
-                    self.runtime.registry.get(run['agent_id']).validate_execution(proposal.get('file_changes', {}))
+                    with self.store.connect() as c:
+                        parent_files=json.loads(c.execute('SELECT body FROM versions WHERE id=?',(run.get('proposal_parent',run['baseline']),)).fetchone()[0]).get('execution_files',{})
+                    self.runtime.registry.get(run['agent_id']).apply_execution_changes(parent_files,proposal.get('file_changes', {}))
                 except (ValueError, AssertionError, TypeError) as error:
                     attempts = run.setdefault('proposal_errors', [])
                     detail = str(error)[:500] or 'Required keys must be non-empty strings; file_changes must satisfy the source contract.'
@@ -336,6 +350,8 @@ class Evolution:
                         continue
                     task = self.store.get(trial['task_id'])
                     if task['state'] == 'queued':
+                        trial.setdefault('pipeline_started',now())
+                        self.save(run)
                         self.runtime.advance(task['id'])
                         if self.round_expired(run):
                             return self.budget_stop(run, 'Whole-round time budget exceeded during preparation')
@@ -347,6 +363,10 @@ class Evolution:
                         path = self.engine.bound(task)
                         self.engine.client.request('POST', path + '/model', {'model': run['model']})
                         result = dict(task['result'], selected_model=run['model'])
+                        if run['policy'].get('scoring_version')==QUALITY_POLICY:
+                            manifest=dict(result['agent_manifest'],quality_policy=QUALITY_POLICY)
+                            result['agent_manifest']=manifest
+                            (Path(manifest['attempt'])/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
                         self.store.transition(task['id'], 'panel_ready', 'panel_ready', result)
                         trial['started'] = now()
                         self.save(run)
@@ -358,10 +378,10 @@ class Evolution:
                         task = self.engine.sync(task['id'])
                         if trial.get('started'):
                             start = datetime.fromisoformat(trial['started'])
-                            overdue = (datetime.now(timezone.utc) - start).total_seconds() > run['policy'].get('trial_seconds', run['policy'].get('max_session_seconds', 1800))
+                            overdue = (datetime.now(timezone.utc) - start).total_seconds() > (run['policy'].get('confirmation_trial_seconds', run['policy']['trial_seconds']) if trial.get('replicate',0) else run['policy'].get('trial_seconds', run['policy'].get('max_session_seconds', 1800)))
                             if overdue:
                                 from .trial_timing import completion
-                                timing = completion(task, start, run['policy'].get('trial_seconds', 1800))
+                                timing = completion(task, start, run['policy'].get('confirmation_trial_seconds', run['policy']['trial_seconds']) if trial.get('replicate',0) else run['policy'].get('trial_seconds',1800))
                                 trial['completion_timing'] = timing
                                 if timing != 'within_budget':
                                     return self.budget_stop(run, 'Trial completion time unavailable' if timing == 'unknown' else 'Trial time allocation exceeded')
@@ -370,45 +390,108 @@ class Evolution:
                         return run
                     interventions = sum(e['kind'] == 'panel.user_message' for e in task['events']) > 1
                     verdict = self.runtime.registry.get(run.get('agent_id', 'precision')).evaluate(task)
-                    trial.update(passed=verdict['passed'], comparable=verdict['comparable'],
+                    trial.update(toolchain_required=verdict.get('toolchain_required',False),toolchain_contract=verdict.get('toolchain_contract'),passed=verdict['passed'], comparable=verdict['comparable'],
                                  manual_intervention=interventions, artifact_integrity=verdict.get('artifact_integrity'),
                                  terminal_state=task['state'], trajectory=trajectory(task),
-                                 duration_seconds=elapsed(task, trial.get('started')), finished=now())
+                                 duration_seconds=elapsed(task, trial.get('pipeline_started')),
+                                 execution_seconds=elapsed(task,trial.get('started')),
+                                 timing_scope='preparation-through-validation', finished=now())
+                    trial['preparation_seconds']=(trial['duration_seconds']-trial['execution_seconds']) if trial['duration_seconds'] is not None and trial['execution_seconds'] is not None else None
                     return self.save(run, 'evaluated ' + task['id'])
                 # Earlier trials may have been edited while later trials ran.
                 for trial in run['trials']:
                     checked = self.runtime.registry.get(run.get('agent_id', 'precision')).evaluate(self.store.get(trial['task_id']))
+                    trial['toolchain_contract']=checked.get('toolchain_contract')
+                    trial['toolchain_required']=checked.get('toolchain_required',False)
+                    trial['passed']=checked['passed']
                     integrity = checked.get('artifact_integrity')
                     if integrity:
                         trial['artifact_integrity'] = integrity
                         if integrity['status'] == 'invalid':
                             trial.update(passed=False, comparable=False)
+                if run['policy'].get('scoring_version') == QUALITY_POLICY:
+                    from .meta_evaluation import evaluate
+                    for trial in run['trials']:
+                        observed_meta = evaluate(self.store.get(trial['task_id']), self.runtime.repo, self.store.root / 'tool-deps')
+                        if trial.get('meta_evaluation'):
+                            if trial['meta_evaluation'].get('artifact_sha256') != observed_meta.get('artifact_sha256') or observed_meta['validity']['eligible'] is not True:
+                                trial['comparable']=False
+                        else:
+                            trial['meta_evaluation']=observed_meta
+                        trial['meta_evaluation']['mode']='formal'
+                        trial['meta_evaluation'].setdefault('captured_at',now())
                 baseline = sum(t['passed'] for t in run['trials'] if t['role'] == 'baseline')
                 candidate = sum(t['passed'] for t in run['trials'] if t['role'] == 'candidate')
-                # Infrastructure failures cannot establish a candidate improvement.
-                valid = all(t.get('comparable', t['terminal_state'] in ('generated', 'validation_failed')) and not t.get('manual_intervention') for t in run['trials'])
                 run['scores'] = {'baseline_passes': baseline, 'candidate_passes': candidate, 'tasks_per_arm': len(run['trials']) // 2}
-                run['state'] = ('promoted' if candidate == len(run['slugs']) and candidate > baseline else 'rejected') if valid else 'inconclusive'
-                if run['policy'].get('scoring_version') == 'paired-efficiency-v2':
-                    decision = decide(run['trials'], run['slugs'], run['policy'])
-                    run['decision'] = decision
-                    run['state'] = decision['state']
-                    if run['state'] == 'confirming':
-                        remaining = (datetime.fromisoformat(run['deadline']) - datetime.now(timezone.utc)).total_seconds() if run.get('deadline') else float('inf')
-                        needed = 2 * len(run['slugs']) * run['policy']['trial_seconds'] + run['policy'].get('overhead_seconds', 0)
-                        if remaining < needed:
-                            run.update(state='inconclusive', reason='Efficiency confirmation requires additional budget')
-                            run['decision'].update(state='inconclusive', confirmation_required=True,
-                                                   reason=run['reason'], required_seconds=needed, remaining_seconds=max(0, remaining))
-                            return self.save(run, 'candidate retained; efficiency benefit not confirmed; no promotion')
-                        for slug in run['slugs']:
-                            for role in ('candidate', 'baseline'):
-                                run['trials'].append({'slug': slug, 'role': role, 'replicate': 1,
-                                    'task_id': self.runtime.create(run.get('agent_id', 'precision'), slug, run[role])})
-                        run['state'] = 'evaluating'
-                        return self.save(run, decision['reason'])
+                adapter=self.runtime.registry.get(run.get('agent_id','precision'))
+                scorer=decide if run['policy'].get('scoring_version')==QUALITY_POLICY else getattr(adapter,'decide',None)
+                if scorer is None:
+                    run.update(state='inconclusive',decision={'state':'inconclusive','reason':'unsupported_evaluation_policy'})
+                    return self.save(run,'Historical policy cannot run; start a new experiment')
+                decision = scorer(run['trials'], run['slugs'], run['policy'])
+                if self.round_expired(run):
+                    return self.budget_stop(run, 'Whole-round time budget exceeded during meta-evaluation')
+                run['decision'] = decision
+                run['state'] = decision['state']
+                if run['state'] == 'confirming':
+                    remaining = (datetime.fromisoformat(run['deadline']) - datetime.now(timezone.utc)).total_seconds() if run.get('deadline') else float('inf')
+                    from .evaluation_budget import confirmation_plan
+                    plan = confirmation_plan(run)
+                    run['confirmation_plan'] = plan
+                    needed = plan['required_seconds']
+                    if remaining < needed:
+                        run.update(state='inconclusive', reason='Paired confirmation requires additional budget')
+                        run['decision'].update(state='inconclusive', confirmation_required=True,
+                                               reason=run['reason'], required_seconds=needed, remaining_seconds=max(0, remaining))
+                        return self.save(run, 'candidate retained; benefit not confirmed; no promotion')
+                    run['policy']['confirmation_trial_seconds']=plan['trial_seconds']
+                    for slug in run['slugs']:
+                        for role in ('candidate', 'baseline'):
+                            run['trials'].append({'slug': slug, 'role': role, 'replicate': 1,
+                                'task_id': self.runtime.create(run.get('agent_id', 'precision'), slug, run[role])})
+                    run['state'] = 'evaluating'
+                    return self.save(run, decision['reason'])
                 return self.save(run, 'fixed Agent evaluator decision', adopt=run['state'] == 'promoted')
             return run
+
+    def confirm(self, identity, minutes, campaign_deadline=None):
+        """Explicit additional budget; resume frozen candidate without redevelopment."""
+        with LOCK:
+            run = self.get(identity)
+            if run['state'] != 'inconclusive' or not run.get('decision', {}).get('confirmation_required'):
+                raise ValueError('Run is not awaiting confirmation')
+            if run['policy'].get('budget_version') != 'first-pair-priority-v1':
+                raise ValueError('Historical budget policy cannot be resumed')
+            if type(minutes) is not int or minutes not in (60, 120, 180):
+                raise ValueError('Confirmation budget must be 60, 120 or 180 minutes')
+            if run['engine_url'] != self.engine.client.url or not self.unchanged(run):
+                raise ValueError('Engine, evaluator or task assets changed; fresh experiment required')
+            agent = run.get('agent_id', 'precision')
+            if self.runtime.adopted(agent) != run.get('baseline_source', run['baseline']):
+                raise ValueError('Adopted baseline changed; fresh comparison required')
+            if any(x['id'] != identity and x['state'] not in TERMINAL and x.get('agent_id','precision') == agent for x in self.list()):
+                raise ValueError('Another experiment is active for this Agent')
+            if len(run['trials']) != 2 * len(run['slugs']) or any(t.get('replicate',0) != 0 or 'passed' not in t for t in run['trials']):
+                raise ValueError('Initial paired evidence is incomplete')
+            from .evaluation_budget import confirmation_plan
+            plan=confirmation_plan(run)
+            needed=plan['required_seconds']
+            if minutes * 60 < needed:
+                raise ValueError('Confirmation requires at least ' + str((needed+59)//60) + ' minutes')
+            if campaign_deadline and datetime.now(timezone.utc)+timedelta(minutes=minutes)>datetime.fromisoformat(campaign_deadline):
+                raise ValueError('Confirmation exceeds authorized Campaign deadline')
+            run['confirmation_plan']=plan
+            run['policy']['confirmation_trial_seconds']=plan['trial_seconds']
+            run.setdefault('budget_extensions', []).append({'seconds': minutes*60, 'authorized_at':now(), 'previous_deadline':run.get('deadline'), 'initial_decision':run['decision'], 'authorization':'campaign_budget' if campaign_deadline else 'explicit'})
+            run['deadline'] = (datetime.now(timezone.utc)+timedelta(minutes=minutes)).isoformat()
+            run.pop('reason',None)
+            run['decision'] = dict(run['decision'], state='confirming', confirmation_required=False)
+            for slug in run['slugs']:
+                for role in ('candidate','baseline'):
+                    run['trials'].append({'slug':slug,'role':role,'replicate':1,
+                        'task_id':self.runtime.create(agent,slug,run[role])})
+            run['state']='evaluating'
+            return self.save(run, 'explicit confirmation budget granted; frozen versions resumed')
 
     def register_candidate(self, run, body):
         run.update(candidate=self.store.version(body, run.get('proposal_parent', run['baseline'])), state='evaluating')

@@ -29,7 +29,7 @@ class RelayTests(unittest.TestCase):
         run = self.evo.tick(self.ready()['id']); self.idle()
         with patch('rasbot.development_checks.check', return_value={'passed': False}):
             run = self.evo.tick(run['id'])
-        (Path(run['development']['package'])/'scripts/helper.py').write_text('print(99)')
+        (Path(run['development']['package'])/'scripts/generation/helper.py').write_text('print(99)')
         count = len(self.client.calls)
         self.assertEqual(self.evo.tick(run['id'])['state'], 'failed')
         self.assertEqual(len(self.client.calls), count)

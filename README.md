@@ -2,36 +2,32 @@
 
 **面向 AI 可靠性任务的 Agent 执行与受控自演进平台。**
 
-RASBot 将任务执行、产物校验、候选开发和版本采用串成可追溯闭环。当前以 PrecisionTesting 为首个领域：通过 OpenCode 生成精度测试用例，独立检查生成产物，再根据执行证据改进指令、Skill 和 Python 脚本。
+RASBot 采用“独立平台 + OpenCode 执行引擎”架构：平台管理任务、版本、预算和评价，OpenCode 执行领域任务并开发候选版本。演进结果经过独立验收与配对比较后，才可能成为后续任务使用的版本。
 
-当前定位是 **Windows 本机单用户工作台**。已实现生成与离线校验、候选开发、配对评测及有限多轮探索；硬件精度实验、SDC 检测和弹性容错尚未接入。`generated` 表示生成产物校验通过，不表示硬件精度通过。
+首个领域是 PrecisionTesting。目前支持精度测试用例生成、离线校验及生成阶段的自演进。ATK 硬件闭环、静默数据损坏（SDC）检测和弹性容错是后续扩展方向，尚未接入。
 
-## 平台如何工作
+## 工作流程
 
 ```text
-领域任务 → 固定 Harness 与任务契约 → OpenCode 执行 → 平台独立校验
-                                                        ↓
-                                                   轨迹与产物
+领域任务 → 固定任务契约 → OpenCode 执行 → 独立校验 → 轨迹与产物
                                                         ↓
 当前采用版本 ← 晋升 / 拒绝 / 无结论 ← 配对评测 ← 候选开发与冻结
 ```
 
-- **RASBot 控制面**：管理任务状态、工作区、版本、实验预算、评价政策、证据和采用决定。
-- **OpenCode 执行引擎**：管理模型 Provider、凭据、会话和工具调用，承担任务执行与候选开发。
-- **领域适配器**：提供任务目录、工作区准备、执行契约、源码包策略、候选开发与评价器；任务池与采用版本按 Agent 隔离。
-- **SQLite 与文件产物库**：保存任务、事件、版本谱系、演进记录及运行产物。
+| 组成 | 职责 |
+| --- | --- |
+| RASBot 控制面 | 任务生命周期、版本谱系、预算、评价政策和采用决定 |
+| OpenCode 引擎 | 模型 Provider、凭据、会话、工具调用和候选开发 |
+| 领域适配器 | 任务目录、工作区准备、执行契约、可修改范围和独立评价 |
+| SQLite 与产物目录 | 任务事件、源码快照、运行产物和演进证据 |
 
-Harness 是 Agent 的工作方法版本，包含执行指令以及可版本化的 Skill、脚本。任务创建时绑定版本，后续晋升不会改绑历史任务。
+任务创建时绑定版本，后续晋升不会改绑历史任务。当前工作台面向 Windows 本机单用户使用。
 
 ## 快速开始
 
-### 环境要求
+需要 Python 3.10+、OpenCode v2，以及单独准备的 PrecisionTesting 仓库。在 OpenCode 中配置可用的模型 Provider；模型服务地址和 API Key 不由 RASBot 重复管理。
 
-- Windows，Python 3.10+。
-- 已安装 OpenCode v2，并在 OpenCode 中配置可用的模型 Provider。
-- 单独准备 PrecisionTesting 仓库；它不随 RASBot 分发。可执行算子需同时具备任务目录和对应 prompt。
-
-以下命令在 RASBot 仓库根目录执行。示例假设 PrecisionTesting 位于同级的 `PrecisionTesting-main` 目录：
+在 RASBot 仓库根目录执行，示例假设 PrecisionTesting 位于同级目录：
 
 ```powershell
 python -m venv .venv
@@ -40,25 +36,20 @@ python -m venv .venv
 .\.venv\Scripts\python -m rasbot serve --repo ..\PrecisionTesting-main --port 8765
 ```
 
-打开 <http://127.0.0.1:8765>。平台核心使用 Python 标准库，`requirements-tools.txt` 提供领域校验所需的 PyYAML。
+打开 <http://127.0.0.1:8765>。平台核心使用 Python 标准库，领域工具依赖由 `requirements-tools.txt` 提供。
 
-平台默认自动托管本机 OpenCode 引擎，优先从 PATH 查找 `opencode.exe`；非标准安装可通过 `RASBOT_OPENCODE_BIN` 指定。当前 Web 工作流不支持外部 OpenCode 连接配置。
+平台自动托管本机 OpenCode，优先从 PATH 查找 `opencode.exe`；非标准安装可设置 `RASBOT_OPENCODE_BIN`。工作台设置可选择新会话的默认模型。平台与引擎间的认证凭据使用 Windows DPAPI 保存，与模型 API Key 分开管理。
 
-模型服务地址和 API Key 只在 **OpenCode** 中配置，RASBot 不维护第二套模型凭据，也不读取 `.env`。平台设置可以选择新会话的默认模型，或跟随 OpenCode 默认值。平台与本机引擎之间的服务认证凭据自动生成，并使用 Windows DPAPI 加密保存；它与模型 API Key 不同。
+详细环境要求见 [安装与迁移](docs/portability.md) 和 [OpenCode 服务](docs/opencode-service.md)。
 
-完整安装、迁移和平台限制见 [安装与迁移](docs/portability.md)、[OpenCode 服务](docs/opencode-service.md)。
+## 运行任务
 
-### 完成一次任务
+1. 选择精度测试 Agent 和算子任务，准备工作区。
+2. 按需生成计划，再启动用例生成；规划和执行使用独立会话。
+3. 在 OpenCode 面板查看工具反馈、处理权限或请求停止。
+4. 查看独立校验结果、任务轨迹、产物和评价证据。
 
-1. 在工作台选择精度测试 Agent 和算子任务。
-2. 准备工作区，固定任务契约与 Skill 快照。
-3. 按需通过 OpenCode 生成计划；规划使用独立会话，完成后任务回到工作区就绪状态。
-4. 启动用例生成，在会话面板查看工具反馈、处理权限或请求停止。
-5. 查看平台独立校验结果、轨迹和产物。执行会话与规划会话分开创建。
-
-精度流程当前限定为生成和离线输入物化。验收按固定策略区分阻塞性警告与提示：描述性的参考来源标签问题可保留为提示；重复输入、覆盖冲突、参考资产不一致和未知警告仍阻止通过。`warnings=true` 不一定代表失败，应结合 `passed` 与 `warning_details` 判断。
-
-规划的“只输出计划”要求属于提示约束，不是工具沙箱。
+`generated` 表示生成产物通过当前校验，**不表示硬件精度通过**。警告是否阻断取决于固定评价政策，应结合 `passed`、`warning_details` 和正式评价记录判断。
 
 无需模型即可运行合成生命周期演示：
 
@@ -66,115 +57,96 @@ python -m venv .venv
 .\.venv\Scripts\python -m rasbot demo
 ```
 
-演示不执行可靠性实验。任务执行还提供 `agent-bundle`、`agent-run` CLI 入口，详见 [PrecisionTesting 接入](docs/precision-runtime.md)。
+演示不执行可靠性实验。`agent-bundle`、`agent-run` 等命令见 [PrecisionTesting 接入](docs/precision-runtime.md)。
 
 ## 受控自演进
 
-### 单轮：提出、开发、验证、决定
+单轮流程为：诊断证据 → 结构化提案 → 候选开发与试跑 → 独立开发验收 → 冻结版本 → 基线/候选配对 → 反序确认 → 决定是否采用。
 
-工作台“自主演进”页选择诊断任务、2～3 个不同的评测任务和 30 / 60 / 120 分钟预算。至少一个评测任务不能出现在本轮诊断证据中。
+工作台选择 2～3 个不同评测任务与 60、120 或 180 分钟预算，默认 120 分钟。至少一个评测任务不在本轮诊断证据中；任务可能跨轮复用，不能视为永久未见的保留集。开发试跑不计入正式评分。
 
-```text
-轨迹诊断 → 结构化提案 → 候选工作区修改与试跑
-         → 独立开发验收 → 冻结源码版本
-         → 基线 / 候选配对执行 → 必要时交换顺序复测
-         → 晋升、拒绝或无结论
-```
+### 可修改范围
 
-精度 Agent 的 Web/API 新轮次默认开启候选开发。允许演进执行指令、`openskill/01_generate_test_rules.md` 和允许范围内的顶层 `scripts/*.py`；工作区创建脚本、任务输入和正式评价器不在候选修改范围。开发结果先经独立验收，再进入正式评测，开发试跑不计入正式分数。
+Precision 当前范围为 `precision-generation-toolchain-v1`：
 
-执行过程允许有界修复：
-
-- 提案 JSON、字段或源码格式不合格时，最多请求模型修复两次，保留错误输出；不重置提案时间预算，也不放行工具越界。
-- 开发产物未通过验收时，在预算和完整性允许的条件下保存检查点并接续会话，最多三个开发会话；接续不重置开发预算。检查点不等于已接受的候选。
-- 新轮次优先为首次基线／候选对照分配预算，不提前为可能发生的效率复测平均分配时间。120 分钟、两个任务且启用开发时，每次正式执行上限为 **1320 秒**，基线与候选一致，整轮时限不延长。
-- 初次效率比较达标后，只有剩余预算足够完成整组反序复测才继续；否则保存候选与初次证据，以 `inconclusive` 和 `confirmation_required=true` 结束，不晋升。尚未自动创建独立确认轮次，也未实现基于历史耗时的预算校准。
-
-以上预算和修复政策在创建轮次时固定，已有实验不会自动改用新政策。
-
-当前采用规则评价的是**生成合规性与生成流程效率**：
-
-- 候选必须通过全部合规性门槛；若通过数严格优于基线，可按合规性晋升。
-- 双方全部通过时，要求每个任务候选耗时不超过基线的 80%，并交换执行顺序复测；每个配对再次达标后才按效率晋升。
-- 不可比较的执行、人工干预或证据不完整不能作为正常晋升依据。
-- 支持回退已晋升轮次，但要求当前采用版本仍为该候选。
-
-耗时包含模型、工具和校验的墙钟时间。两次配对复测不构成统计显著性证明，也不能证明数值覆盖或缺陷发现能力提高。
-
-### 多轮：有预算的长期目标
-
-“长期演进目标”支持 1～12 轮串行探索，每轮沿用独立开发与评价流程。系统依据上一轮失败阶段选择下一步假设，并可从本目标中与当前基线兼容、证据可比较的被拒绝候选中选择父版本继续开发；正式对照仍使用创建该轮时的当前采用版本。
-
-目标支持暂停、继续和停止。预算耗尽或连续三轮无晋升会停止；失败、取消或无结论通常需要检查后继续。每轮实验观察按 Agent 留存，后续提案按评价器及失败特征检索，最多读取六项摘要。修改组件来自开发前后的实际源码哈希差异，而非提案声明；缺少历史基线时标记为未知。摘要可包含经过筛选的开发验收失败项、相对文件路径和源码变化，不返回正式评测内容或原始日志。这些记录保留证据与结果，不等于已验证的通用经验。
-
-评测任务跨轮复用，因此不能宣称具有永久未见的保留集。当前为有限、串行、多候选探索，尚未实现并行种群搜索或评价器自动演进。
-
-具体政策、恢复语义与历史实测见 [自主演进](docs/evolution.md)、[候选开发工作区](docs/candidate-development.md)。
-
-## 能力与边界
-
-| 范围 | 当前实现 |
+| 类别 | 核心文件 |
 | --- | --- |
-| 领域执行 | 精度用例生成与离线校验；另有合成流程演示 |
-| 会话交互 | OpenCode 对话、工具反馈、一次性权限处理、停止与状态同步 |
-| 版本管理 | 内容寻址 Harness 快照、父子关系、按 Agent 采用与回退 |
-| 候选开发 | 领域适配器管理可修改范围、试跑、检查点接续、独立验收和源码冻结 |
-| 演进评价 | 固定政策、配对任务、效率复测、拒绝与无结论记录 |
-| 长期探索 | 有界串行轮次、历史候选续作、实验观察复用 |
-| 观测审计 | 任务轨迹、版本差异、评价证据及只读审计 |
-| 尚未接入 | ATK 硬件闭环、SDC 与容错插件、硬件资源池 |
+| Skill（4 个） | `openskill/00_prepare_task.md`、`01_generate_test_rules.md`、`02_run_atk_verification.md`、`03_analyze_precision_report.md` |
+| 脚本（4 个） | `scripts/create_workspace.py`、`prepare_atk_submission.py`、`verify_schema.py`、`verify_trigger_coverage.py` |
+| 提示词（2 个） | `prompts/prompt_template.md`、`generate_prompt__repo_version_DS_aclnnName.py` |
+| 文档（3 个） | `docs/trigger_library.md`、`simplified_atk_test_rules__json.md`、`decorated_atk_operator_schema__yaml.md` |
 
-当前使用文件副本、提示约束和完整性检查，**没有操作系统级执行沙箱**。OpenCode 仍继承本机执行权限，平台不会自动批准全部权限请求。开发参考目录缩小了可见材料范围，但不能阻止同机已知路径访问。
+核心入口可修改、不可删除。辅助模块可在 `scripts/generation/`、`scripts/common/`、`prompts/fragments/`、`docs/generation/`、`tests/generation/` 中按规定文件类型新增、修改和删除；执行指令也可演进。旧版本已有的顶层 Python 辅助脚本保留兼容。
 
-服务仅监听回环地址，采用 Host / Origin 检查和变更请求令牌，适用于本机单用户使用。不要让多个服务进程同时调度同一数据库。
+候选工作区创建脚本和提示词生成器实际参与执行，四个 Skill 一起版本化。`atk_queue`、固定任务、逐算子提示词、ground truth 及平台评价器不开放修改；采用候选不会覆盖原始 PrecisionTesting 仓库。
 
-已有会话与演进状态可在服务重启后继续观察；准备、创建会话等阶段中途故障的恢复仍有限。提交结果不明时不自动重发；取消需等待引擎终态确认。关闭页面不停止后台轮次，退出平台或断开连接也不会强制停止托管引擎。
+### 评价与晋升
 
-已用真实模型验证生成与离线校验。最近一轮重构后演进完成了开发检查点接续、独立验收、候选冻结和正式评测启动，但基线超过当时的 660 秒预算，最终为 `inconclusive`，未完成整组 A/B 比较，也未晋升。
+当前正式评价使用 `meta-generation-v3`，测量生成设计质量：
 
-随后调整的预算、有限提案修复及警告分级已通过 159 项回归测试，尚未重跑真实模型演进。测试通过不代表已证明演进收益或硬件可靠性提升。
+| 指标 | 权重 | 含义 |
+| --- | ---: | --- |
+| 规则有效性 | 35% | 固定工具可物化的规则满足任务数量要求 |
+| 风险覆盖 | 30% | 固定输入规格探针的命中情况 |
+| 交付完整性 | 15% | 必要产物存在且非空 |
+| 证据一致性 | 10% | 规则与覆盖账本的关联一致性 |
+| 多样性 | 10% | 输入规格的差异程度 |
 
-## 代码结构
+专项风险探针目前支持 Expm1、Log1p、Hardtanh；所有具备任务输入和提示词的算子均可参加演进，不受专项探针限制。规格覆盖不是实际采样覆盖，也不是缺陷发现率；未知分布不能自动算作命中。
 
-| 文件 / 模块 | 职责 |
+晋升先要求可信完整的配对证据、候选有效规则与交付达标，再比较整轮综合质量收益；辅助指标的逐任务退步只作诊断，不单独否决晋升：
+
+- **质量路径**：两轮各自的平均加权收益均至少为 1 分。
+- **耗时只用于预算和诊断**：质量持平时，任何速度收益都不能触发晋升。
+
+首轮达标只触发确认，仅对当前可重放的离线生成任务交换执行顺序复测后才可晋升；此规则不能直接用于不可重放的硬件实验。耗时包含工具、校验和平台观测开销，不等于纯模型速度。质量与成本不混成一个可相互抵消的总分。
+
+脚本或文档变化时，平台还会追加正常与异常规则的结构契约探针；契约失败不能由高分抵消。准备阶段保留固定资产等价检查，执行阶段检查版本完整性。这些检查尚不构成完整的工具链语义验证。
+
+晋升记录明确标注：**生成阶段已评价，硬件执行与报告分析效果未验证**。四个 Skill 均可修改不等于四个阶段均已验证，两轮确认也不构成统计显著性证明。
+
+### 预算与多轮探索
+
+提案和开发支持预算内的有限修复。首次配对优先获得执行预算；确认预算可依据首轮观测耗时估算，但不超过固定上限。预算不足时保存候选和证据，以无结论结束，可显式追加预算继续确认，恢复前重新核对版本、引擎与固定资产。
+
+长期目标支持 1～12 轮串行探索、暂停、继续和停止，并可选择兼容的历史被拒绝候选继续开发。确认轮可使用目标已授权的剩余预算；不足时需要处理。系统不自动扩大授权预算，也不进行无限或并行种群搜索。
+
+详见 [自主演进](docs/evolution.md)、[候选开发工作区](docs/candidate-development.md) 和 [评价与轨迹分析](docs/evaluation.md)。
+
+## 当前边界
+
+- 已实现任务轨迹、产物证据、源码差异、版本关系及评价记录；完整谱系可视化、跨版本趋势和自动因果归因仍需完善。
+- 文件副本、提示约束和完整性检查不是操作系统级沙箱，OpenCode 继承本机执行权限。
+- 服务仅监听回环地址，带 Host / Origin 检查和变更请求令牌；不要让多个服务进程同时调度同一数据库。
+- 关闭页面不会停止后台轮次。已有会话可继续观察，但部分中间阶段的故障恢复仍有限。
+- 自动化测试和离线探针验证实现行为，不证明真实模型演进收益或硬件可靠性提升。
+
+## 代码与测试
+
+| 模块 | 职责 |
 | --- | --- |
-| `rasbot/__main__.py`、`web.html` | CLI、本机 HTTP API、调度入口与工作台 |
-| `core.py`、`runtime.py`、`agents.py` | 存储、任务生命周期、Agent 注册与领域适配 |
-| `managed_engine.py`、`settings.py`、`opencode_service.py` | 托管引擎、连接设置与会话交互 |
-| `execution_package.py` | 通用安全路径、文件清单、落盘、哈希及完整性检查，不包含领域目录规则 |
-| `precision_package.py`、`precision_development.py` | Precision 源码白名单、Skill 适配、固定依赖及领域开发实现 |
-| `agent_runtime.py`、`task_contract.py`、`precision_warnings.py` | Precision 执行契约、生成校验和固定警告分级 |
-| `evolution.py`、`development.py`、`development_checks.py` | 单轮演进、候选开发与独立开发验收 |
-| `evolution_selection.py`、`evolution_scoring.py` | 任务选择与配对评分 |
-| `campaigns.py`、`experience.py` | 长期目标调度与实验观察记录 |
-| `analysis.py`、`evidence.py`、`quality.py`、`*_audit.py` | 轨迹、产物证据、质量分析及审计 |
-| `tests/`、`docs/` | 回归测试与功能文档 |
+| `core.py`、`runtime.py`、`agents.py` | 存储、任务生命周期与领域注册 |
+| `__main__.py`、`web.html` | CLI、HTTP API、后台调度与工作台 |
+| `managed_engine.py`、`settings.py`、`opencode_service.py` | OpenCode 托管与会话交互 |
+| `precision_package.py`、`precision_toolchain.py`、`agent_runtime.py` | 源码范围、版本化工具链与任务执行 |
+| `evolution.py`、`development.py`、`development_checks.py` | 单轮演进、候选开发与验收 |
+| `meta_evaluation.py`、`risk_profile.py`、`meta_promotion.py`、`toolchain_contracts.py` | 独立评价、风险探针、晋升与契约检查 |
+| `evaluation_budget.py`、`campaigns.py`、`experience.py` | 确认预算、多轮探索与实验摘要 |
+| `analysis.py`、`evidence.py`、`*_audit.py` | 轨迹分析、完整性证据与审计 |
 
-## 开发与测试
-
-在仓库根目录运行：
+在仓库根目录运行回归测试：
 
 ```powershell
 .\.venv\Scripts\python -m unittest discover -s tests -v
 ```
 
-测试使用临时目录与合成样本，不依赖历史本机任务。真实模型调用、生成质量与硬件接入需要另外验收。扩展领域时通过 AgentRegistry 提供任务、执行与评价适配，并实现源码快照／校验／变更合并和开发工作区／契约／验收接口。通用文件路径检查不代替领域可修改范围授权。接口与边界见 [Agent 架构](docs/agent-architecture.md)。
+测试使用临时目录、合成样本和模拟会话；真实模型与硬件需要另行验收。扩展领域通过 AgentRegistry 接入任务、执行、开发和评价适配，参见 [Agent 架构](docs/agent-architecture.md)。
 
 ## 数据与迁移
 
-默认 `.rasbot/` 保存数据库、工作区、会话和工具轨迹、产物、演进报告及加密服务凭据，已由 Git 忽略；`.local/` 用于本机辅助文件。模型 Provider 凭据由 OpenCode 管理。
+默认 `.rasbot/` 保存数据库、工作区、轨迹、产物、演进记录及加密服务凭据，已由 Git 忽略。可用 `--data` 指定其他本机数据目录；更换目录不会自动迁移任务。不要跨用户或机器复制 DPAPI 凭据，应由平台重新生成。
 
-可通过 `--data` 指定本机绝对路径。更换目录会选择另一套状态，不会自动迁移任务；若自定义目录位于仓库内，应额外加入 `.gitignore`。不要复制 DPAPI 服务凭据到其他用户或机器，应让平台重新生成。
-
-源码分发不包含 PrecisionTesting、模型、运行产物和本机配置。提交前检查暂存差异；忽略规则不能移除已跟踪的数据，也不能保护手工上传的压缩包。
-
-## 文档
-
-- [文档目录](docs/README.md)
-- [安装与迁移](docs/portability.md) · [OpenCode 服务](docs/opencode-service.md)
-- [Agent 架构](docs/agent-architecture.md) · [PrecisionTesting 接入](docs/precision-runtime.md)
-- [自主演进](docs/evolution.md) · [候选开发工作区](docs/candidate-development.md)
-- [评价与轨迹分析](docs/evaluation.md) · [ATK 接入计划](docs/atk-integration-plan.md)
+PrecisionTesting、模型、运行产物和本机配置不随源码分发。更多说明见 [文档目录](docs/README.md)、[安装与迁移](docs/portability.md) 和 [ATK 接入计划](docs/atk-integration-plan.md)。
 
 ## 许可证
 

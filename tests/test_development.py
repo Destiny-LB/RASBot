@@ -15,7 +15,7 @@ class DevelopmentTests(unittest.TestCase):
         (self.repo / 'openskill').mkdir(exist_ok=True)
         (self.repo / 'openskill/01_generate_test_rules.md').write_text('Write report/constraints.md')
         (self.repo / 'scripts').mkdir()
-        (self.repo / 'scripts/helper.py').write_text('print(1)\n')
+        (self.repo / 'scripts/generation').mkdir(parents=True,exist_ok=True); (self.repo / 'scripts/generation/helper.py').write_text('print(1)\n')
         run = self.evo.create([self.task], ['sample', 'holdout'], self.model, development=True)
         def prepare(runtime, task, target):
             workspace = target / 'workspace'; (workspace / '01_generate/src').mkdir(parents=True)
@@ -36,7 +36,7 @@ class DevelopmentTests(unittest.TestCase):
         self.assertEqual(run['trials'], [])
         self.assertNotIn('candidate', run)
         run = self.evo.tick(run['id'])
-        (Path(run['development']['package'])/'scripts/helper.py').write_text('print(2)\n')
+        (Path(run['development']['package'])/'scripts/generation/helper.py').write_text('print(2)\n')
         self.idle()
         restarted = Evolution(self.runtime, self.evo.engine)
         with patch('rasbot.development_checks.check', return_value={'passed': True}):
@@ -46,8 +46,8 @@ class DevelopmentTests(unittest.TestCase):
         self.assertEqual(len(run['trials']), 4)
         with self.runtime.store.connect() as c:
             body = json.loads(c.execute('SELECT body FROM versions WHERE id=?',(run['candidate'],)).fetchone()[0])
-        self.assertEqual(body['execution_files']['scripts/helper.py'], 'print(2)\n')
-        self.assertEqual((self.repo/'scripts/helper.py').read_text(), 'print(1)\n')
+        self.assertEqual(body['execution_files']['scripts/generation/helper.py'], 'print(2)\n')
+        self.assertEqual((self.repo/'scripts/generation/helper.py').read_text(), 'print(1)\n')
         self.assertTrue(all(self.runtime.store.get(t['task_id'])['result']=={} for t in run['trials']))
 
     def test_protected_task_change_rejects_freeze(self):
@@ -77,7 +77,7 @@ class DevelopmentTests(unittest.TestCase):
 
     def test_deleted_disallowed_and_invalid_sources_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);(root/'scripts').mkdir()
+            root=Path(tmp);(root/'scripts/generation').mkdir(parents=True)
             with self.assertRaises(ValueError):collect(root,['scripts/base.py'])
             (root/'scripts/base.py').write_text('def broken(')
             with self.assertRaises(ValueError):collect(root,[])

@@ -94,7 +94,7 @@ class AgentTests(unittest.TestCase):
         (submission / 'test_suite.json').write_text(json.dumps([{'id': 1, 'inputs': {'shape': [1]}}]))
         report = self.ws / '01_generate/report'
         report.mkdir()
-        for name in ('test_rule_design.md', 'trigger_coverage.json', 'trigger_library.md'):
+        for name in ('constraints.md', 'test_rule_design.md', 'trigger_coverage.json', 'trigger_library.md'):
             (report / name).write_text('valid')
         output = atk / 'atk_input/test_suite.atk.json'
         output.write_text('old output')

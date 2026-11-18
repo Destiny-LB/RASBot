@@ -1,4 +1,5 @@
 """Agent registry and domain adapters. Core storage uses domain as a legacy agent key."""
+from .evaluation_policy import QUALITY_POLICY
 import hashlib
 import json
 import re
@@ -13,12 +14,15 @@ class PrecisionAgent:
     execution = True
     evolution = True
     file_evolution = True
+    execution_scope = 'precision-generation-toolchain-v1'
     task_label = '算子任务'
     description = '生成精度测试用例并离线校验；硬件执行尚未接入。'
     harness_id = 'precision-generation'
     evaluator_id = 'generation-gate-efficiency-v2'
     evolution_goal = '提高正式用例生成合规性'
     def __init__(self, repo): self.repo = repo
+    def expand_execution(self,files):
+        return {**self.snapshot_execution(),**files}
     def snapshot_execution(self):
         from .precision_package import snapshot
         return snapshot(self.repo)
@@ -79,15 +83,17 @@ class PrecisionAgent:
         intact = integrity['status'] != 'invalid'
         return {'passed': intact and task['state'] == 'generated' and task['result'].get('validation', {}).get('passed') is True,
                 'comparable': intact and task['state'] in ('generated', 'validation_failed'),
-                'artifact_integrity': integrity}
+                'toolchain_required':task['result'].get('agent_manifest',{}).get('execution_scope')=='precision-generation-toolchain-v1',
+                'toolchain_contract':task['result'].get('validation',{}).get('toolchain_contract'), 'artifact_integrity': integrity}
     def policy(self):
         return {'version': self.evaluator_id, 'minimum_tasks': 2,
-                'promotion': 'all candidate tasks pass; more passes or confirmed paired generation efficiency',
-                'scoring_version': 'paired-efficiency-v2',
-                'efficiency_max_ratio': 0.8, 'efficiency_repetitions': 2,
-                'scope': 'generation compliance only; no precision or coverage-quality claim',
+                'promotion': 'fixed generation meta-evaluation with paired confirmation',
+                'scoring_version': QUALITY_POLICY, 'promotion_version':'generation-quality-aggregate-v2',
+                'confirmation_repetitions':2, 'cost_role':'budget_and_diagnostics_only',
+                'replay_scope':'offline_generation_only', 'hardware_replay_supported':False,
+                'scope': 'generation design quality; fixed risk probes, no hardware effect claim',
                 'max_session_seconds': 1800, 'max_repairs': 0}
-    proposal_constraints = ('Preserve immutable assets, original max_cases, existing validators, generation-only scope. '
+    proposal_constraints = ('Preserve the public verify_schema.validate_atk_structure(data) -> (errors, warnings) interface and core script CLI arguments; internal implementation may be refactored. Preserve immutable assets, original max_cases, existing validators, generation-only scope. '
         'The candidate overlay is for an EXECUTING coding agent, not a planner. '
         'Read task docs, design and write formal test rules and reports, run existing validators and materialize ATK inputs. '
         'Keep native file/tool argument schemas correct. Do not instruct plan-only behavior. '
@@ -96,19 +102,25 @@ class PrecisionAgent:
         'prohibits hardware/SSH/Docker/ground-truth access and protects source/configuration/validators. '
         'Never claim hardware or precision success. ')
     def prepare(self, runtime, task, target):
-        result = subprocess.run([sys.executable, '-X', 'utf8', str(self.repo / 'scripts/create_workspace.py'),
-            '--source-dir', str(self.repo / 'tasks' / task['slug']), '--workspace-root', str(target)],
-            capture_output=True, timeout=120, encoding='utf-8', errors='replace')
-        (target / 'prepare.log').write_text(result.stdout + result.stderr, encoding='utf-8')
-        if result.returncode: raise RuntimeError('Workspace preparation failed; inspect prepare.log')
-        skills = {}
         with runtime.store.connect() as c:
             version = json.loads(c.execute('SELECT body FROM versions WHERE id=?', (task['version'],)).fetchone()[0])
+        preparation=None
+        if version.get('execution_scope')==self.execution_scope:
+            from .precision_toolchain import prepare
+            workspace,preparation=prepare(runtime,task['slug'],target,version['execution_files'])
+        else:
+            result = subprocess.run([sys.executable, '-X', 'utf8', str(self.repo / 'scripts/create_workspace.py'),
+                '--source-dir', str(self.repo / 'tasks' / task['slug']), '--workspace-root', str(target)],
+                capture_output=True, timeout=120, encoding='utf-8', errors='replace')
+            (target / 'prepare.log').write_text(result.stdout + result.stderr, encoding='utf-8')
+            if result.returncode: raise RuntimeError('Workspace preparation failed; inspect prepare.log')
+            workspace=result.stdout.strip().splitlines()[-1]
+        skills = {}
         for file in sorted((self.repo / 'openskill').glob('*.md')):
             content = version.get('execution_files', {}).get('openskill/' + file.name, file.read_text(encoding='utf-8'))
             skills[file.name] = {'sha256': hashlib.sha256(content.encode()).hexdigest(), 'content': content}
         (target / 'skills-snapshot.json').write_text(json.dumps(skills, ensure_ascii=False), encoding='utf-8')
-        return 'prepared', {'workspace': result.stdout.strip().splitlines()[-1],
+        return 'prepared', {'workspace': workspace, 'preparation_evidence':preparation,
             'skills_snapshot': str(target / 'skills-snapshot.json'),
             'next': 'Use OpenCode to plan or generate; hardware execution is not connected'}
     def bundle(self, runtime, identity, engine, model=None, transport='cli'):
@@ -155,6 +167,12 @@ class AgentRegistry:
     def public(self):
         result = [{k: getattr(a, k) for k in ('id','name','available','execution','evolution','task_label','description','harness_id','evaluator_id','evolution_goal')}
                   for a in self.adapters.values()]
+        for item in result:
+            if item['id']=='precision':
+                from .precision_package import SCOPE,CORE,AUXILIARY
+                item['evolution_scope']={'id':SCOPE,'core_files':sorted(CORE),
+                    'auxiliary':{k:sorted(v) for k,v in AUXILIARY.items()},
+                    'validated_stages':['01_generate'],'unvalidated_stages':['00_prepare_task','02_run_atk_verification','03_analyze_precision_report']}
         result += [{'id': 'sdc', 'name': 'SDC 检测 Agent', 'available': False, 'execution': False, 'evolution': False,
                     'description': '静默故障检测 · 未接入'},
                    {'id': 'resilience', 'name': '弹性容错 Agent', 'available': False, 'execution': False, 'evolution': False,

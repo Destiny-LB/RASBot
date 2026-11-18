@@ -17,6 +17,11 @@ class SelectionTests(unittest.TestCase):
         (self.runtime.repo / 'prompts').mkdir()
         for slug in ('a', 'b'):
             (self.runtime.repo / 'prompts' / (slug + '.md')).write_text('task')
+        adapter=self.runtime.registry.get('precision')
+        legacy=dict(adapter.policy(),scoring_version='meta-generation-v3')
+        adapter.policy=lambda:dict(legacy)
+        from unittest.mock import patch
+        self.risk_support=patch('rasbot.risk_profile.supported',return_value=True);self.risk_support.start();self.addCleanup(self.risk_support.stop)
         self.selection = Selection(self.runtime)
 
     def task(self, slug, state):
@@ -78,3 +83,14 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(second['alternative_count'], 0)
         self.assertEqual(first, self.selection.recommend(['missing'], ['missing']))
+
+
+    def test_new_policy_includes_tasks_without_specialized_profile(self):
+        self.risk_support.stop()
+        adapter=self.runtime.registry.get('precision')
+        policy=dict(adapter.policy(),scoring_version='meta-generation-v3')
+        adapter.policy=lambda:dict(policy)
+        self.task('a','generated')
+        result=self.selection.recommend()
+        self.assertTrue(result['ready'])
+        self.assertIn('a',result['pool'])

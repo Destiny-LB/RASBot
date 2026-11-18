@@ -43,9 +43,9 @@ class PromotionTests(unittest.TestCase):
 class EvidenceTests(unittest.TestCase):
     def test_proposal_only_edit_is_in_full_diff(self):
         with tempfile.TemporaryDirectory() as tmp:
-            p=Path(tmp)/'scripts';p.mkdir();(p/'helper.py').write_text('print(2)')
-            result=observe({'package':tmp, 'parent_file_hashes':hashes({'scripts/helper.py':'print(1)'}),
-                            'initial_file_hashes':hashes({'scripts/helper.py':'print(2)'})})
+            p=Path(tmp)/'scripts/generation';p.mkdir(parents=True);(p/'helper.py').write_text('print(2)')
+            result=observe({'package':tmp, 'parent_file_hashes':hashes({'scripts/generation/helper.py':'print(1)'}),
+                            'initial_file_hashes':hashes({'scripts/generation/helper.py':'print(2)'})})
             self.assertEqual(result['components'], ['scripts'])
             self.assertEqual(result['development_delta']['paths'], [])
 

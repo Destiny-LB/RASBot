@@ -24,6 +24,11 @@ class FixtureAgent(DemoAgent):
     def assets(self, keys): return []
     def policy(self):
         return {'version': self.evaluator_id, 'max_session_seconds': 1800, 'max_repairs': 0}
+    def decide(self, trials, slugs, policy):
+        valid=all(t['comparable'] for t in trials)
+        baseline=sum(t['passed'] for t in trials if t['role']=='baseline')
+        candidate=sum(t['passed'] for t in trials if t['role']=='candidate')
+        return {'state':('promoted' if candidate==len(slugs) and candidate>baseline else 'rejected') if valid else 'inconclusive','reason':'Explicit fixture-domain evaluator'}
     def evaluate(self, task):
         return {'passed': task['result'].get('fixture_pass', False), 'comparable': task['state'] == 'completed'}
 

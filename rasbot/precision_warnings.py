@@ -1,4 +1,5 @@
 """Fixed warning policy: informational metadata never excuses lost evidence."""
+from .evaluation_policy import QUALITY_POLICY
 def classify(log):
     result = []
     for line in log.splitlines():
@@ -17,3 +18,9 @@ def classify(log):
             code, blocking = 'unclassified', True
         result.append({'code': code, 'blocking': blocking, 'message': message[:1000]})
     return result
+
+
+def apply_quality_policy(warnings, policy):
+    if policy != QUALITY_POLICY:return warnings
+    return [dict(w, blocking=False, disposition='quality_metric')
+            if w['code'] in ('duplicate_input','coverage_consistency') and not any(term in w['message'].lower() for term in ('canonical','sha256','runnable')) else dict(w) for w in warnings]

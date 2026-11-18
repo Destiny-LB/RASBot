@@ -24,14 +24,14 @@ class DomainDevelopmentTests(unittest.TestCase):
 
     def test_actual_changes_override_proposal(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp); (root/'scripts').mkdir()
-            (root/'scripts/helper.py').write_text('pass')
-            dev = {'package': tmp, 'parent_file_hashes': hashes({'scripts/helper.py': 'pass'}), 'initial_file_hashes': hashes({'scripts/helper.py': 'pass'})}
-            (root/'scripts/helper.py').write_text('print(1)')
+            root = Path(tmp); (root/'scripts/generation').mkdir(parents=True)
+            (root/'scripts/generation/helper.py').write_text('pass')
+            dev = {'package': tmp, 'parent_file_hashes': hashes({'scripts/generation/helper.py': 'pass'}), 'initial_file_hashes': hashes({'scripts/generation/helper.py': 'pass'})}
+            (root/'scripts/generation/helper.py').write_text('print(1)')
             dev['source_changes'] = observe(dev)
             run = {'development': dev, 'proposal': {'file_changes': {}}, 'state': 'failed'}
             self.assertEqual(features(run)['changed_component'], 'scripts')
-            self.assertEqual(diagnostic(run)['source_changes']['paths'], ['scripts/helper.py'])
+            self.assertEqual(diagnostic(run)['source_changes']['paths'], ['scripts/generation/helper.py'])
 
     def test_diagnostic_filters_absolute_paths_and_logs(self):
         run = {'development': {'check': {'passed': False, 'validation': {

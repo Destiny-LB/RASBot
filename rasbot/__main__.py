@@ -137,7 +137,9 @@ def serve(runtime, port):
                 from .analysis import analyze_task
                 try:
                     identity = parse_qs(urlparse(self.path).query).get('task_id', [''])[0]
-                    self.reply(analyze_task(runtime.store.get(identity)))
+                    report=analyze_task(runtime.store.get(identity), runtime.repo, runtime.store.root / 'tool-deps')
+                    report['formal_evaluations']=[{'run_id':r['id'],'role':t['role'],'replicate':t.get('replicate',0),'evaluation':t['meta_evaluation'],'decision':r.get('decision')} for r in evolution.list() for t in r['trials'] if t['task_id']==identity and t.get('meta_evaluation')]
+                    self.reply(report)
                 except ValueError as e:
                     self.reply({'error': str(e)}, 400)
             elif path == '/api/versions':
@@ -211,6 +213,8 @@ def serve(runtime, port):
                     result = evolution.tick(data['id'])
                 elif path == '/api/evolution/cancel':
                     result = evolution.cancel(data['id'])
+                elif path == '/api/evolution/confirm':
+                    result = evolution.confirm(data['id'], data.get('minutes'))
                 elif path == '/api/evolution/rollback':
                     result = evolution.rollback(data['id'])
                 elif path == '/api/settings/model':

@@ -15,7 +15,7 @@ def validate_files(files):
         raise ValueError('Invalid execution file package')
     size = 0
     for name, content in files.items():
-        if not safe_path(name) or not isinstance(content, str) or not content.strip():
+        if not safe_path(name) or not isinstance(content, str) or (not content.strip() and not name.endswith('/__init__.py')):
             raise ValueError('Invalid execution source: ' + str(name))
         size += len(content.encode('utf-8'))
     if size > 2_000_000: raise ValueError('Execution package exceeds 2 MB')
@@ -77,3 +77,10 @@ def intact(root, expected, folders=None, ignore_cache=False):
     except OSError:
         return False
     return actual == expected
+
+
+# One authoritative artifact contract shared by runtime acceptance and scoring.
+GENERATION_DELIVERABLES = ('01_generate/submission/test_suite.json',
+    '01_generate/report/constraints.md', '01_generate/report/test_rule_design.md',
+    '01_generate/report/trigger_coverage.json', '02_atk_run/atk_input/test_suite.atk.json',
+    '01_generate/report/trigger_library.md')

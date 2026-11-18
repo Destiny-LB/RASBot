@@ -15,13 +15,19 @@ STRATEGIES = (
 )
 
 
-def select_next(runs, adopted):
+def select_next(runs, adopted, scoring_version=None):
     # Only comparable rejected candidates from the current baseline are donors.
     donors = [r for r in runs if r['state'] == 'rejected' and r.get('candidate') and r.get('trials')
               and r.get('baseline_source', r['baseline']) == adopted
               and all(t.get('comparable', False) and not t.get('manual_intervention')
                       for t in r.get('trials', []))]
+    from .meta_promotion import summary
+    if scoring_version and scoring_version.startswith('meta-'):
+        donors=[r for r in donors if (r.get('policy') or {}).get('scoring_version')==scoring_version and summary(r) is not None and (r.get('decision') or {}).get('basis')!='generation_efficiency']
     def rank(run):
+        if scoring_version and scoring_version.startswith('meta-'):
+            q=summary(run)
+            return (q['mean_gain'], -q['regression_count'], run.get('created',''))
         scores = run.get('scores') or {}
         return (scores.get('candidate_passes', 0) - scores.get('baseline_passes', 0),
                 scores.get('candidate_passes', 0), run.get('created', ''))
@@ -31,7 +37,7 @@ def select_next(runs, adopted):
     if stage == 'development':
         hypothesis = '修复独立开发验收失败；先复现诊断任务失败，再验证最小修改，不改变验收器。'
     elif stage == 'evaluation':
-        hypothesis = '针对已观察到的合规性或效率不足提出单一可证伪假设；禁止读取正式评测任务。'
+        hypothesis = '针对已观察到的质量分项不足提出单一可证伪假设；禁止读取正式评测任务。'
     else:
         hypothesis = STRATEGIES[0]
     return {'parent': donor['candidate'] if donor else None,
@@ -70,8 +76,8 @@ class Campaigns:
         with LOCK:
             if not isinstance(objective, str) or not 1 <= len(objective.strip()) <= 2000:
                 raise ValueError('Describe an objective in 1–2000 characters')
-            if type(max_rounds) is not int or not 1 <= max_rounds <= 12 or round_minutes not in (60, 120, 240):
-                raise ValueError('Use 1–12 rounds and 60/120/240 minutes per round')
+            if type(max_rounds) is not int or not 1 <= max_rounds <= 12 or round_minutes not in (60, 120, 180):
+                raise ValueError('Use 1–12 rounds and 60/120/180 minutes per round')
             if any(x['agent_id'] == agent_id and x['state'] in ('active', 'stopping', 'paused', 'needs_attention') for x in self.list()):
                 raise ValueError('Finish or stop the existing objective for this Agent first')
             agent = self.runtime.registry.get(agent_id)
@@ -148,6 +154,19 @@ class Campaigns:
                 return self.save(item)
             if active:
                 return self.save(item)
+            if owned and owned[-1]['state']=='inconclusive' and owned[-1].get('decision',{}).get('confirmation_required'):
+                from .evaluation_budget import confirmation_plan
+                pending=owned[-1];needed=confirmation_plan(pending)['required_seconds']
+                available=(datetime.fromisoformat(item['deadline'])-datetime.now(timezone.utc)).total_seconds()
+                options=[m for m in (60,120,180) if needed<=m*60<=available]
+                if options:
+                    resumed=self.evo.confirm(pending['id'],min(options),campaign_deadline=item['deadline'])
+                    item.update(current_run=resumed['id'],last_error=None)
+                    return self.save(item)
+                item.update(state='needs_attention',current_run=None,
+                            last_error='Confirmation cannot fit authorized Campaign budget',
+                            confirmation_required_seconds=needed)
+                return self.save(item)
             if owned and owned[-1]['state'] in ('failed', 'inconclusive', 'cancelled'):
                 # Resume acknowledges the last failed round, it never replays it.
                 if item.get('acknowledged_run') != owned[-1]['id']:
@@ -168,7 +187,7 @@ class Campaigns:
             if any(r['state'] not in TERMINAL and r.get('agent_id', 'precision') == item['agent_id'] for r in self.evo.list()):
                 return self.save(item)  # A manually initiated round owns this Agent slot.
             index = len(owned)
-            selection = select_next(owned, self.runtime.adopted(item['agent_id']))
+            selection = select_next(owned, self.runtime.adopted(item['agent_id']), self.runtime.registry.get(item['agent_id']).policy().get('scoring_version'))
             donor = selection['parent']
             query = features(owned[-1]) if owned else {}
             if owned:
@@ -180,7 +199,7 @@ class Campaigns:
             if minutes_left < 60:
                 item.update(state='budget_exhausted')
                 return self.save(item)
-            budget = max(m for m in (60, 120, 240) if m <= min(item['round_minutes'], minutes_left))
+            budget = max(m for m in (60, 120, 180) if m <= min(item['round_minutes'], minutes_left))
             run = self.evo.create(item['source_ids'], item['slugs'], item['model'], budget,
                                   item['agent_id'], development=True, proposal_parent=donor,
                                   campaign_context=context)

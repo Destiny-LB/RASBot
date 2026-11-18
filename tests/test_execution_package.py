@@ -12,7 +12,7 @@ import test_agent_runtime
 class PackageTests(unittest.TestCase):
     def test_invalid_paths_and_python_rejected(self):
         for name, code in [('scripts/../escape.py', 'x=1'), ('scripts\\escape.py', 'x=1'),
-                           ('C:/escape.py', 'x=1'), ('scripts/create_workspace.py', 'x=1'),
+                           ('C:/escape.py', 'x=1'), ('scripts/verify_precision_report.py', 'x=1'),
                            ('tasks/a.py', 'x=1'), ('scripts/a.py', 'def broken('),
                            ('openskill/02_atk_run.md', 'changed')]:
             with self.subTest(name=name), self.assertRaises(ValueError):
@@ -22,9 +22,9 @@ class PackageTests(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as root:
             target = Path(root) / 'package'
-            expected = materialize(target, {'scripts/helper.py': 'print(1)\n'})
+            expected = materialize(target, {'scripts/generation/helper.py': 'print(1)\n'})
             self.assertTrue(intact(target, expected))
-            (target / 'scripts/helper.py').write_text('print(2)')
+            (target / 'scripts/generation/helper.py').write_text('print(2)')
             self.assertFalse(intact(target, expected))
 
 
@@ -35,7 +35,7 @@ class ExecutionSourceTests(unittest.TestCase):
         with self.runtime.store.connect() as c:
             parent = json.loads(c.execute('SELECT body FROM versions WHERE id=?', (self.runtime.baseline,)).fetchone()[0])
         parent['execution_files'] = {'openskill/01_generate_test_rules.md': 'Candidate Skill',
-                                     'scripts/helper.py': 'print("candidate")\n'}
+                                     'scripts/generation/helper.py': 'print("candidate")\n'}
         version = self.runtime.store.version(parent, self.runtime.baseline)
         with self.runtime.store.connect() as c:
             c.execute('UPDATE tasks SET version=? WHERE id=?', (version, self.task))
@@ -46,12 +46,12 @@ class ExecutionSourceTests(unittest.TestCase):
         text = Path(m['instruction']).read_text(encoding='utf-8')
         self.assertIn('Candidate Skill', text)
         self.assertIn('EXECUTION_ROOT=', text)
-        self.assertEqual((Path(m['execution_root']) / 'scripts/helper.py').read_text(), 'print("candidate")\n')
-        self.assertFalse((self.repo / 'scripts/helper.py').exists())
+        self.assertEqual((Path(m['execution_root']) / 'scripts/generation/helper.py').read_text(), 'print("candidate")\n')
+        self.assertFalse((self.repo / 'scripts/generation/helper.py').exists())
 
     def test_runtime_source_edits_rejected(self):
         m = self.candidate_bundle()
-        (Path(m['execution_root']) / 'scripts/helper.py').write_text('print("edited")')
+        (Path(m['execution_root']) / 'scripts/generation/helper.py').write_text('print("edited")')
         self.assertEqual(validate(self.runtime, m)['reason'], 'Versioned execution sources changed during trial')
 
     def test_candidate_script_cannot_replace_independent_gate(self):
@@ -61,7 +61,7 @@ class ExecutionSourceTests(unittest.TestCase):
         sub = self.ws / '01_generate/submission'; sub.mkdir()
         (sub / 'test_suite.json').write_text('[{"inputs": {"x": 1}}]')
         report = self.ws / '01_generate/report'; report.mkdir()
-        for name in ('test_rule_design.md', 'trigger_coverage.json', 'trigger_library.md'):
+        for name in ('constraints.md', 'test_rule_design.md', 'trigger_coverage.json', 'trigger_library.md'):
             (report / name).write_text('evidence')
         # Configuration was created after bundle; refresh only task protection for this fixture.
         from rasbot.agent_runtime import protected_digest
@@ -79,11 +79,11 @@ class FileEvolutionTests(unittest.TestCase):
 
     def test_file_proposal_is_inherited_evaluated_and_auditable(self):
         (self.repo / 'scripts').mkdir()
-        (self.repo / 'scripts/helper.py').write_text('print("base")\n')
+        (self.repo / 'scripts/generation').mkdir(parents=True,exist_ok=True); (self.repo / 'scripts/generation/helper.py').write_text('print("base")\n')
         run = self.evo.create([self.task], ['sample', 'holdout'], self.model)
         self.evo.tick(run['id'])
         proposal = {'diagnosis': '修复脚本', 'agent_instructions': '执行版本化脚本',
-                    'meta_evaluation': '保留固定验收', 'file_changes': {'scripts/helper.py': 'print("candidate")\n'}}
+                    'meta_evaluation': '保留固定验收', 'file_changes': {'scripts/generation/helper.py': 'print("candidate")\n'}}
         original = self.client.request
         self.client.request = lambda method, path, body=None: ({'data': [
             {'type': 'assistant', 'content': [{'type': 'text', 'text': json.dumps(proposal)}]},
@@ -92,12 +92,12 @@ class FileEvolutionTests(unittest.TestCase):
         self.assertEqual(run['state'], 'evaluating')
         with self.runtime.store.connect() as c:
             read = lambda v: json.loads(c.execute('SELECT body FROM versions WHERE id=?', (v,)).fetchone()[0])
-            self.assertEqual(read(run['baseline'])['execution_files']['scripts/helper.py'], 'print("base")\n')
-            self.assertEqual(read(run['candidate'])['execution_files']['scripts/helper.py'], 'print("candidate")\n')
+            self.assertEqual(read(run['baseline'])['execution_files']['scripts/generation/helper.py'], 'print("base")\n')
+            self.assertEqual(read(run['candidate'])['execution_files']['scripts/generation/helper.py'], 'print("candidate")\n')
         from rasbot.version_audit import audit_versions
         rows = {v['id']: v for v in audit_versions(self.runtime.store, run['baseline'], [run])}
         self.assertIn('+print("candidate")', rows[run['candidate']]['file_diffs'][0]['diff'])
-        self.assertEqual((self.repo / 'scripts/helper.py').read_text(), 'print("base")\n')
+        self.assertEqual((self.repo / 'scripts/generation/helper.py').read_text(), 'print("base")\n')
         run = test_evolution.EvolutionTests.finish(self, run, 1, 2)
         self.assertEqual(run['state'], 'promoted')
         self.assertEqual(self.runtime.store.get(self.runtime.create('precision', 'sample'))['version'], run['candidate'])

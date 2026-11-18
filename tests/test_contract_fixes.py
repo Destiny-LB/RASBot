@@ -23,7 +23,7 @@ class ContractFixTests(unittest.TestCase):
             root = Path(tmp); repo = root/'repo'; package = root/'package'
             original = repo/'tasks/sample/02_atk_run/atk_runnable/executor.py'
             original.parent.mkdir(parents=True); original.write_text('original')
-            files = {'scripts/helper.py': 'pass'}
+            files = {'scripts/generation/helper.py': 'pass'}
             materialize(package, files)
             refs = materialize_references(package, repo, 'sample')
             self.assertTrue(references_intact(package, refs))

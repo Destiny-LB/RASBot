@@ -1,4 +1,5 @@
 """Coding-agent process adapter. Does not bypass runtime tool permissions."""
+from .evaluation_policy import QUALITY_POLICY
 import hashlib
 import json
 import os
@@ -8,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from .precision_warnings import classify
+from .precision_warnings import classify, apply_quality_policy
 from .task_contract import render
 from .precision_package import snapshot as source_snapshot, materialize, intact, materialize_references, references_intact
 
@@ -97,6 +98,15 @@ def bundle(runtime, task_id, engine, model=None, transport='cli'):
                        for p in (runtime.repo / 'scripts').rglob('*.py')}
     text = render(runtime.repo, execution_root, workspace, task['slug'], skill,
                   prompt.read_text(encoding='utf-8'), overlay)
+    if harness.get('execution_scope')=='precision-generation-toolchain-v1':
+        from .precision_toolchain import prompt as generate_prompt
+        guidance=generate_prompt(runtime,execution_root,task['slug'])
+        if not intact(execution_root,package_hashes) or not references_intact(execution_root,reference_hashes):
+            raise ValueError('Prompt generator mutated frozen package')
+        text += '\n## Candidate task guidance (fixed task facts and platform contract take precedence)\n'+guidance
+        text += '\n## Versioned workflow Skills (only Step 1 executed in this harness)\n'
+        for name,content in sorted(files.items()):
+            if name.startswith('openskill/') and name!='openskill/01_generate_test_rules.md':text+='\n### '+name+'\n'+content
     instruction = attempt / 'task.md'
     instruction.write_text(text, encoding='utf-8')
     args = command(engine, instruction, model) if transport == 'cli' else None
@@ -107,12 +117,19 @@ def bundle(runtime, task_id, engine, model=None, transport='cli'):
                 'execution_root': str(execution_root), 'execution_files': package_hashes,
                 'reference_files': reference_hashes,
                 'trusted_scripts': trusted_scripts,
-                'protected': protected_digest(workspace), 'scope': 'generate-only'}
+                'protected': protected_digest(workspace), 'scope': 'generate-only',
+                'execution_scope':harness.get('execution_scope','legacy'),
+                'validated_workflow_stages':['01_generate'],
+                'unvalidated_workflow_stages':['00_prepare_task','02_run_atk_verification','03_analyze_precision_report']}
     (attempt / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
     return manifest
 
 
 def validate(runtime, manifest):
+    import time
+    from .evaluation_budget import remaining
+    manifest=dict(manifest)
+    manifest.setdefault('validation_deadline',time.monotonic()+manifest.get('validation_timeout',180))
     workspace = Path(manifest['workspace'])
     if manifest.get('execution_root') and 'reference_files' in manifest and not references_intact(manifest['execution_root'], manifest['reference_files']):
         return {'passed': False, 'reason': 'Fixed execution reference files changed'}
@@ -144,11 +161,11 @@ def validate(runtime, manifest):
         if signature in seen:
             duplicates.append(rule.get('id', index))
         seen.add(signature)
-    if duplicates:
+    if duplicates and manifest.get('quality_policy')!=QUALITY_POLICY:
         return {'passed': False, 'reason': 'Duplicate input specifications',
                 'duplicate_count': len(duplicates), 'example_ids': duplicates[:20]}
-    required = ['01_generate/report/test_rule_design.md',
-                '01_generate/report/trigger_coverage.json', '01_generate/report/trigger_library.md']
+    from .execution_package import GENERATION_DELIVERABLES
+    required = [name for name in GENERATION_DELIVERABLES if name.startswith('01_generate/report/')]
     missing = [name for name in required if not (workspace / name).is_file()
                or not (workspace / name).stat().st_size]
     if missing:
@@ -166,16 +183,25 @@ def validate(runtime, manifest):
         fresh_output = Path(temp) / output.name
         args = [sys.executable, '-X', 'utf8', str(runtime.repo / 'scripts/prepare_atk_submission.py'),
                 'prepare', '--task-dir', str(workspace), '--submission', str(suite), '-o', str(fresh_output)]
-        result = subprocess.run(args, cwd=runtime.repo, capture_output=True, timeout=manifest.get('validation_timeout', 180),
+        result = subprocess.run(args, cwd=runtime.repo, capture_output=True, timeout=remaining(manifest['validation_deadline'],manifest.get('validation_timeout',180)),
                                 encoding='utf-8', errors='replace', env=tool_env)
         log = result.stdout + result.stderr
         (Path(manifest['attempt']) / 'validation.log').write_text(log, encoding='utf-8')
-        warning_details = classify(log)
+        warning_details = apply_quality_policy(classify(log),manifest.get('quality_policy'))
         clean = result.returncode == 0 and not any(w['blocking'] for w in warning_details) and fresh_output.is_file()
+        if clean and manifest.get('quality_policy')==QUALITY_POLICY:
+            materialized=json.loads(fresh_output.read_text(encoding='utf-8'))
+            clean=isinstance(materialized,list) and len(materialized)==expected
         if clean:
             os.replace(fresh_output, output)
-    return {'passed': clean, 'returncode': result.returncode, 'warnings': bool(warning_details), 'warning_details': warning_details,
-            'warning_policy': 'precision-warning-severity-v1',
+    contract = None
+    if clean and manifest.get('execution_scope')=='precision-generation-toolchain-v1':
+        from .toolchain_contracts import check
+        contract=check(runtime,manifest,suite)
+        clean=contract['passed']
+    return {'toolchain_contract':contract, 'passed': clean, 'returncode': result.returncode, 'warnings': bool(warning_details), 'warning_details': warning_details,
+            'warning_policy': manifest.get('quality_policy','precision-warning-severity-v1'),
+            'duplicate_count': len(duplicates),
             'expected_count': expected, 'actual_count': len(rules),
             'suite_sha256': hashlib.sha256(suite.read_bytes()).hexdigest(),
             'atk_input_sha256': hashlib.sha256(output.read_bytes()).hexdigest() if clean else None,

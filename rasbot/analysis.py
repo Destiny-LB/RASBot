@@ -96,11 +96,13 @@ def diagnose(task):
             'scope': 'Observed state residence time, not causal attribution; unfinished phases excluded'}
 
 
-def analyze_task(task):
+def analyze_task(task, repo=None, dependencies=None):
     report = {'task_id': task['id'], 'agent_id': task['domain'], 'diagnosis': diagnose(task),
               'quality': {'status': 'unsupported'}}
     if task['domain'] != 'precision': return report
     report['evidence'] = task_evidence(task)
+    from .meta_evaluation import evaluate
+    report['meta_evaluation'] = evaluate(task, repo, dependencies)
     workspace = task['result'].get('workspace')
     if not workspace:
         report['quality'] = {'status': 'unavailable'}; return report

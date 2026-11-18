@@ -1,12 +1,15 @@
 """Precision-specific candidate development, assets and contracts."""
+from .evaluation_policy import QUALITY_POLICY
 import json
 import shutil
 from pathlib import Path
-from .precision_package import materialize, editable, validate_files, hashes, materialize_references, references_intact
+from .precision_package import materialize, editable, validate_files, hashes, materialize_references, references_intact, CORE
 from .agent_runtime import protected_digest, asset_changes
 from .task_contract import render
 
 def collect(root, original, references=None):
+    if any(not editable(name) for name in original):
+        raise ValueError("Unsupported source in development parent")
     root = Path(root)
     if not root.is_dir() or root.is_symlink() or (hasattr(root, 'is_junction') and root.is_junction()):
         raise ValueError('Invalid development source root')
@@ -26,7 +29,7 @@ def collect(root, original, references=None):
         if not editable(name) or size > 2_000_000 or len(files) >= 100:
             raise ValueError('Unapproved development source: ' + name)
         files[name] = p.read_text(encoding='utf-8')
-    if set(original) - set(files):
+    if any(name in CORE for name in set(original)-set(files)):
         raise ValueError('Development cannot delete inherited sources')
     return validate_files(files)
 
@@ -49,14 +52,18 @@ def prepare(adapter, runtime, source, root, body):
                 out.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(file, out)
     return {'root': str(root), 'package': str(package), 'workspace': str(workspace),
-                          'training_slug': source['slug'], 'protected': protected_digest(workspace),
+                          'execution_scope':body.get('execution_scope','legacy'), 'training_slug': source['slug'], 'protected': protected_digest(workspace),
                           'initial_file_hashes': hashes(collect(package, list(body['execution_files']), references)),
                           'original_files': list(body['execution_files']), 'reference_files': references,
                           'reference': str(reference), 'task_facts': adapter.task_prompt(source['slug']), 'status': 'ready'}
 
 
 def prompt(dev, proposal):
-    prompt = f'''开发候选版本并试跑修复。允许使用工具。只允许修改 EXECUTION_ROOT 中已有 Skill、顶层 Python 脚本及新增允许的辅助脚本；不能删除继承文件。
+    prompt = f'''开发候选版本并试跑修复。允许修改执行包内4个openskill文件、create_workspace/prepare_atk_submission/verify_schema/verify_trigger_coverage四个Python脚本、提示词模板和生成器，以及三个核心格式/风险文档。
+完整核心清单：{sorted(CORE)}
+兼容接口：必须保留 scripts/verify_schema.py 的 validate_atk_structure(data) 入口，返回 (errors, warnings)，供平台独立结构探针调用；其内部实现可自由重构。核心脚本现有命令行参数属于兼容契约。
+允许在 scripts/generation、scripts/common、prompts/fragments、docs/generation、tests/generation 中新增、修改、删除辅助模块；核心入口不能删除。atk_queue、任务样本、原始仓库及平台评价器不可修改。
+辅助脚本必须接收当前 WORKSPACE_DIR 或命令行参数，不得绑定开发工作区绝对路径；从当前任务契约解析算子与产物路径；正式评测会切换工作区和任务。临时生成器若不需要随版本分发，请放在 development/scratch 而非执行包根目录。
 EXECUTION_ROOT={dev['package']}
 WORKSPACE_DIR={dev['workspace']}
 REPO_ROOT={dev.get('reference', dev['root'])}
@@ -68,6 +75,10 @@ REPO_ROOT={dev.get('reference', dev['root'])}
 开发测试是试验依据，不是正式评测分数；平台将在会话完成后检查并冻结源码。无需在最终回复重发源码 JSON。
 诊断与候选指令：{json.dumps(proposal, ensure_ascii=False)}
 '''
+    if dev.get('scoring_version')==QUALITY_POLICY:
+        prompt += '\n本轮使用元评价v2：重复输入与声明关联不一致属于质量扣分项，不单独构成开发验收失败。仍应尽量改善，但不能删减要求的规则数、放宽输入约束或修改固定验收器。开发必须交付完整规则、报告和可由平台原始脚本重新物化的全部ATK输入。禁止声称已完成硬件风险覆盖。\n'
+    if dev.get('execution_scope')=='precision-generation-toolchain-v1':
+        prompt += '\n4个Skill必须保持流程一致；本轮只执行和评价生成环节，不据此声称硬件执行或报告分析能力提升。候选格式文档/校验脚本不能替代固定验收协议。\n'
     if dev.get('checkpoint'):
         prompt += '\n上次开发检查点（仅开发证据，未晋升）：' + json.dumps(dev['checkpoint'], ensure_ascii=False)
     prompt = render(dev.get('reference', dev['root']), dev['package'], dev['workspace'],
@@ -84,7 +95,7 @@ def observe(dev):
     # Read only allowed candidate sources, even when artifact acceptance failed.
     current = {}
     root = Path(dev['package'])
-    for folder in ('openskill', 'scripts'):
+    for folder in ('openskill', 'scripts', 'prompts', 'docs', 'tests'):
         for p in (root / folder).rglob('*'):
             if p.is_file() and not p.is_symlink() and p.resolve().is_relative_to(root.resolve()) and editable(p.relative_to(root).as_posix()):
                 import hashlib
@@ -95,7 +106,7 @@ def observe(dev):
         diff = asset_changes(initial, current)
         paths = sorted(set(sum(diff.values(), [])))
         return {'status': 'observed', **diff, 'paths': paths,
-                'components': sorted({'scripts' if p.startswith('scripts/') else 'skill' for p in paths})}
+                'components': sorted({'skill' if p.startswith('openskill/') else p.split('/')[0] for p in paths})}
     full = difference(dev.get('parent_file_hashes'))
     full['development_delta'] = difference(dev.get('initial_file_hashes'))
     return full

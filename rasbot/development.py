@@ -20,6 +20,7 @@ def prepare(evo, run, body):
     adapter = evo.runtime.registry.get(run['agent_id'])
     source = evo.store.get(run['evidence'][0]['task_id'])
     run['development'] = adapter.prepare_development(evo.runtime, source, root, body)
+    run['development']['scoring_version']=run.get('policy',{}).get('scoring_version')
     with evo.store.connect() as c:
         parent = json.loads(c.execute('SELECT body FROM versions WHERE id=?', (run.get('proposal_parent', run['baseline']),)).fetchone()[0])
     adapter.bind_development_parent(run['development'], parent.get('execution_files', {}))
@@ -114,11 +115,18 @@ def tick(evo, run):
     except (ValueError, OSError) as error:
         run.update(state='failed', reason=str(error)); dev['status'] = 'failed'
         return evo.save(run, 'development freeze rejected')
-    if run['policy'].get('development_check') == 'development-artifact-gate-v1':
+    if run['policy'].get('development_check') in ('development-artifact-gate-v1','development-artifact-gate-v2'):
         remaining = run['policy']['development_seconds'] - (datetime.now(timezone.utc) - datetime.fromisoformat(dev['started'])).total_seconds()
+        if run.get('deadline'):
+            remaining=min(remaining,(datetime.fromisoformat(run['deadline'])-datetime.now(timezone.utc)).total_seconds())
         if remaining <= 0:
             return evo.budget_stop(run, 'Development budget exhausted before independent check')
         dev['check'] = adapter.check_development(evo.runtime, dev, remaining)
+        if dev['check'].get('reason')=='budget_exhausted':
+            return evo.budget_stop(run,'Development acceptance budget exhausted')
+        if dev['check'].get('reason')=='toolchain_evidence_unavailable':
+            run.update(state='inconclusive',reason='Development toolchain evidence unavailable');dev['status']='inconclusive'
+            return evo.save(run,run['reason'])
         if not dev['check']['passed']:
             if relay(evo, run, 'Independent development artifact check failed'):
                 return run
